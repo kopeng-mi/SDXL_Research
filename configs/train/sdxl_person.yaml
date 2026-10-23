@@ -1,0 +1,35 @@
+# Proven T4 settings for a person/identity LoRA on SDXL (from Lora_Tra_XL_patch_v1).
+# Override any key from the notebook form or with --set key=value.
+
+# base model: org/repo/file on HF, an https URL, or a local path
+model: stabilityai/stable-diffusion-xl-base-1.0/sd_xl_base_1.0.safetensors
+hf_repo: null          # private HF repo for LoRAs + resume state
+
+resolution: 1024
+repeats: 6
+epochs: 15
+batch_size: 3
+save_every: 1
+keep_last: 10
+seed: 42
+
+lora_type: LoRA        # LoRA | LoCon
+network_dim: 24
+network_alpha: 16
+conv_dim: 16           # LoCon only
+conv_alpha: 8          # LoCon only
+
+optimizer: AdamW8bit
+unet_lr: 2.0e-4
+text_encoder_lr: 2.0e-5  # 0 = train U-Net only
+lr_scheduler: cosine_with_restarts
+lr_cycles: 3
+lr_warmup_ratio: 0.05
+
+full_fp16: true
+min_snr_gamma: 5
+ip_noise_gamma: 0.1
+multires_noise: true
+
+# sentence captions (Qwen/JoyCaption) must not be shuffled; true only for tag captions
+shuffle_caption: false
