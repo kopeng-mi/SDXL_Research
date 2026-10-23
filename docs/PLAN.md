@@ -107,8 +107,14 @@ ETA rule of thumb for the Train tab: steps = images x repeats x epochs / batch;
 SDXL 1024 px batch 3 ~5.1 s/step; Z-Image 512 px batch 1 ~5.7 s/step; plus
 caching (~2-4 min) and first-run downloads.
 
+New UI (5 tabs + Jobs) checked on a Colab CPU VM through a browser: renders,
+dataset import as a job with auto-refresh, caption editor, Library download,
+JSON presets save/load. GPU paths in the UI (Load, Generate, Train, Compare,
+Caption) still need a T4 pass.
+
 Next:
-1. Confirm Z-Image LoRA effect on Turbo; try 768 px training
+1. T4 pass of the UI's GPU paths; measure SDXL Fast mode (Lightning LoRA)
+2. Confirm Z-Image LoRA effect on Turbo with a real run; try 768 px training
 2. New UI (tabs above) on top of JobManager
 3. Fast mode for SDXL (Lightning/Hyper LoRA), measure speeds
 4. More captioners (e.g. WD tagger for tag-style captions)
