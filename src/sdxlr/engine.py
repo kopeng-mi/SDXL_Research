@@ -61,12 +61,16 @@ def _fix_text_encoder_lora_keys(pipe) -> None:
     """transformers 5 dropped the `text_model.` wrapper from CLIPTextModel, but
     diffusers 0.40 still maps kohya keys to `text_encoder.text_model.encoder...`,
     so text-encoder LoRA weights match no module and loading fails. Strip the
-    wrapper from the converted keys (and alphas) when the module names lack it.
-    (Module names, not hasattr: transformers 5 keeps a `text_model` alias.)"""
-    if any(n.startswith("text_model.") for n, _ in pipe.text_encoder.named_modules()):
+    wrapper from the converted keys (and alphas) for each encoder whose module
+    names lack it. Checked per encoder: CLIPTextModel (te1) changed, while
+    CLIPTextModelWithProjection (te2) still uses text_model.*; and by module
+    names, not hasattr, because transformers 5 keeps a `text_model` alias."""
+    flat = [prefix for prefix, enc in (("text_encoder", pipe.text_encoder), ("text_encoder_2", pipe.text_encoder_2))
+            if not any(n.startswith("text_model.") for n, _ in enc.named_modules())]
+    if not flat:
         return
     orig = pipe.lora_state_dict
-    pat = re.compile(r"^(text_encoder(?:_2)?)\.text_model\.")
+    pat = re.compile(rf"^({'|'.join(flat)})\.text_model\.")
 
     def fixed(*args, **kwargs):
         sd, alphas, *rest = orig(*args, **kwargs)
@@ -146,7 +150,15 @@ class Engine:
             self.pipe.delete_adapters([old])
         name = "l" + hashlib.md5(path.encode()).hexdigest()[:10]
         p = Path(path)
-        self.pipe.load_lora_weights(str(p.parent), weight_name=p.name, adapter_name=name)
+        try:
+            self.pipe.load_lora_weights(str(p.parent), weight_name=p.name, adapter_name=name)
+        except Exception:
+            # a half-loaded adapter keeps its name taken; remove it so a retry works
+            try:
+                self.pipe.delete_adapters([name])
+            except Exception:
+                pass
+            raise
         self.adapters[path] = name
         return name
 
