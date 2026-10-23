@@ -21,6 +21,8 @@ from pathlib import Path
 import toml
 import yaml
 
+from .fetch import MODELS, fetch
+
 REPO = Path(__file__).resolve().parents[2]
 KOHYA = REPO / "vendor" / "sd-scripts"
 PRESETS = REPO / "configs" / "train"
@@ -34,21 +36,6 @@ def _cast(v: str):
         except ValueError:
             pass
     return {"true": True, "false": False, "none": None}.get(v.lower(), v)
-
-
-def fetch_model(src: str, dst_dir: Path) -> Path:
-    """'org/repo/file.safetensors', an https URL, or a local path."""
-    if Path(src).exists():
-        return Path(src)
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    if src.startswith("http"):
-        dst = dst_dir / src.split("?")[0].rsplit("/", 1)[-1]
-        if not dst.exists():
-            subprocess.run(["curl", "-fL", "--retry", "3", "-o", str(dst), src], check=True)
-        return dst
-    from huggingface_hub import hf_hub_download
-    org, repo, file = src.split("/", 2)
-    return Path(hf_hub_download(f"{org}/{repo}", file, local_dir=dst_dir))
 
 
 def latest_state(hf_repo: str, name: str, dst: Path) -> Path | None:
@@ -175,7 +162,7 @@ def main() -> None:
 
     out = WORK / "runs" / a.name
     out.mkdir(parents=True, exist_ok=True)
-    model = fetch_model(c["model"], WORK / "models")
+    model = fetch(c["model"], MODELS)
     cfg, ds = build_configs(c, model, a.images, out)
 
     cmd = [sys.executable, "-u", str(KOHYA / "sdxl_train_network.py"),
