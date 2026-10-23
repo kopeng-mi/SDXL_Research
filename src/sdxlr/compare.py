@@ -114,6 +114,8 @@ def main() -> None:
             print(f"[{i}/{len(todo)}] {r} @ {c}: FAILED {state['errors'][f'{r}|{c}']}", flush=True)
         state_f.write_text(json.dumps(state, indent=1))
 
+    if not state["cells"]:
+        raise SystemExit(f"no images rendered; errors: {json.dumps(state['errors'], indent=1)}")
     grid = stitch(list(rows), cols, state["cells"])
     grid.save(out / "grid.png")
     print(f"grid: {out / 'grid.png'} ({len(state['cells'])} images, {len(state['errors'])} errors, "

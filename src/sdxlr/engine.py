@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -54,6 +55,24 @@ class Job:
     image: Image.Image | None = None  # inpaint source
     mask: Image.Image | None = None  # white = repaint
     strength: float = 0.75
+
+
+def _fix_text_encoder_lora_keys(pipe) -> None:
+    """transformers 5 dropped the `text_model.` wrapper from CLIPTextModel, but
+    diffusers 0.40 still maps kohya keys to `text_encoder.text_model.encoder...`,
+    so text-encoder LoRA weights match no module and loading fails. Strip the
+    wrapper from the converted keys (and alphas) when the model lacks it."""
+    if hasattr(pipe.text_encoder, "text_model"):
+        return
+    orig = pipe.lora_state_dict
+    pat = re.compile(r"^(text_encoder(?:_2)?)\.text_model\.")
+
+    def fixed(*args, **kwargs):
+        sd, alphas, *rest = orig(*args, **kwargs)
+        ren = lambda d: d if d is None else {pat.sub(r"\1.", k): v for k, v in d.items()}
+        return (ren(sd), ren(alphas), *rest)
+
+    pipe.lora_state_dict = fixed
 
 
 def vram() -> str:
@@ -103,6 +122,7 @@ class Engine:
         if vae != "fp16fix":
             pipe.vae.config.force_upcast = True  # model VAE in fp16 NaNs; upcast only for decode
         pipe.set_progress_bar_config(disable=True)
+        _fix_text_encoder_lora_keys(pipe)
         self.pipe = pipe.to("cuda")
         self.model_path, self.vae_mode = path, vae
         return f"loaded {Path(path).name} in {time.time() - t:.0f}s | {vram()}"
