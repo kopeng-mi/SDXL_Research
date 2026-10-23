@@ -98,8 +98,10 @@ Done (branch `step1-scaffold`): bootstrap, notebook builder, captioner, SDXL
 trainer, dataset fetch, prompt encoder, engine (SDXL + Z-Image), compare,
 first Gradio app, job queue, presets, settings, Z-Image trainer (untested).
 
-Z-Image LoRA training works on T4 (512 px). In progress: loading the trained
-LoRA on Turbo after diffusers conversion, and Z-Image inpaint.
+Z-Image end to end works on T4: train (512 px) -> convert to diffusers ->
+load on Turbo (attaches to 210 transformer modules) -> generate; Z-Image inpaint
+works (~30 s). The 30-step test LoRA was too weak to change the image (lora_B
+norm ~0.09); a real run is needed to judge identity learning.
 
 ETA rule of thumb for the Train tab: steps = images x repeats x epochs / batch;
 SDXL 1024 px batch 3 ~5.1 s/step; Z-Image 512 px batch 1 ~5.7 s/step; plus
