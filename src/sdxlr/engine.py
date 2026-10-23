@@ -61,8 +61,9 @@ def _fix_text_encoder_lora_keys(pipe) -> None:
     """transformers 5 dropped the `text_model.` wrapper from CLIPTextModel, but
     diffusers 0.40 still maps kohya keys to `text_encoder.text_model.encoder...`,
     so text-encoder LoRA weights match no module and loading fails. Strip the
-    wrapper from the converted keys (and alphas) when the model lacks it."""
-    if hasattr(pipe.text_encoder, "text_model"):
+    wrapper from the converted keys (and alphas) when the module names lack it.
+    (Module names, not hasattr: transformers 5 keeps a `text_model` alias.)"""
+    if any(n.startswith("text_model.") for n, _ in pipe.text_encoder.named_modules()):
         return
     orig = pipe.lora_state_dict
     pat = re.compile(r"^(text_encoder(?:_2)?)\.text_model\.")
