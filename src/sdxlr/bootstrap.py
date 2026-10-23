@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 KOHYA = REPO / "vendor" / "sd-scripts"
 VENV = Path(os.environ.get("SDXLR_VENV", "/content/venv"))
 VENV_PY = VENV / "bin" / "python"
-PYTHON = "3.12"
+PYTHON = "3.12"  # uv-managed, never the Colab system Python (it changes often)
 STAMP = VENV / ".sdxlr-stamp"
 
 
@@ -46,7 +46,7 @@ def ensure_venv() -> Path:
 
     uv = _uv()
     if not VENV_PY.exists():
-        subprocess.run([uv, "venv", str(VENV), "--python", PYTHON, "--seed"], check=True)
+        subprocess.run([uv, "venv", str(VENV), "--python", PYTHON, "--managed-python", "--seed"], check=True)
 
     def pip(*args: str, cwd: Path = REPO) -> None:
         subprocess.run([uv, "pip", "install", "--python", str(VENV_PY), *args], cwd=cwd, check=True)
