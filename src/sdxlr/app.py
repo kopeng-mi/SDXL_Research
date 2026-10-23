@@ -638,8 +638,27 @@ def build() -> gr.Blocks:
 
         jobs_df.select(_pick_job, None, job_id)
         job_cancel.click(cancel_job, job_id, jobs_df)
+        seen_done: set[str] = set()
+
+        def tick(jid, ds):
+            # refresh whatever a just-finished job changed
+            new = [j for j in jm.jobs.values() if j.status in ("done", "failed") and j.id not in seen_done]
+            seen_done.update(j.id for j in new)
+            kinds = {j.kind for j in new}
+            keep = gr.update()
+            ds_view = show_dataset(ds)[:2] if kinds & {"import", "caption"} else (keep, keep)
+            if kinds & {"download", "train", "import"}:
+                loras, models = _lora_choices(), _model_names()
+                lists = ([gr.update(choices=loras)] * N_LORAS + [gr.update(choices=models)] * 3
+                         + [gr.update(choices=[p.name for p in list_loras()])] + [gr.update(choices=_datasets())] * 2)
+            else:
+                lists = [keep] * (N_LORAS + 3 + 1 + 2)
+            return (_header(), _jobs_table(), job_log(jid), *ds_view, *lists)
+
         timer = gr.Timer(2.0)
-        timer.tick(lambda jid: (_header(), _jobs_table(), job_log(jid)), job_id, [header, jobs_df, job_out],
+        timer.tick(tick, [job_id, ds_pick],
+                   [header, jobs_df, job_out, ds_gallery, ds_info, *lora_inputs[::2], sdxl_model, t_base, c_base,
+                    c_loras, ds_pick, t_ds],
                    concurrency_limit=None, show_progress="hidden")  # never waits behind a generation
 
         def refresh_lists():
