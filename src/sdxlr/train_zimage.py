@@ -108,7 +108,7 @@ def main() -> None:
             continue
         dst = lora.with_name(f"{lora.stem}_diffusers.safetensors")
         if not dst.exists():
-            _run("networks/convert_lora.py", "--input", str(lora), "--output", str(dst), "--target", "other")
+            _run("convert_lora.py", "--input", str(lora), "--output", str(dst), "--target", "other")
     print(f"LoRAs in {out}: {sorted(p.name for p in out.glob('*_diffusers.safetensors'))}", flush=True)
 
 

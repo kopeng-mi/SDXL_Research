@@ -248,7 +248,8 @@ class Engine:
         if job.image is not None:
             if self._inpaint is None:
                 from diffusers import ZImageInpaintPipeline
-                self._inpaint = ZImageInpaintPipeline.from_pipe(self.pipe, torch_dtype=torch.float16)
+                # GGUF/bnb weights can't be cast, which from_pipe tries; reuse the parts as they are
+                self._inpaint = ZImageInpaintPipeline(**self.pipe.components)
             img = job.image.convert("RGB")
             w, h = (img.width // 16) * 16, (img.height // 16) * 16
             return self._inpaint(image=img.resize((w, h)), mask_image=job.mask.convert("L").resize((w, h)),

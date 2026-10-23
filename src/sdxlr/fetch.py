@@ -53,7 +53,9 @@ def fetch_loras(src: str) -> list[Path]:
 
 
 def list_models() -> list[Path]:
-    return sorted(MODELS.rglob("*.safetensors"))
+    """SDXL checkpoints only (Z-Image parts live in models/zimage*/)."""
+    return sorted(p for p in MODELS.rglob("*.safetensors")
+                  if not any(part.startswith("zimage") for part in p.relative_to(MODELS).parts))
 
 
 def list_loras() -> list[Path]:
