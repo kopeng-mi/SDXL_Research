@@ -49,6 +49,7 @@ SAMPLERS = {
     "dpmpp_sde_karras": ("DPMSolverSinglestepScheduler", {"use_karras_sigmas": True}),
     "euler_a": ("EulerAncestralDiscreteScheduler", {}),
     "euler": ("EulerDiscreteScheduler", {}),
+    "euler_trailing": ("EulerDiscreteScheduler", {"timestep_spacing": "trailing"}),  # Lightning / few-step
     "lcm": ("LCMScheduler", {}),
 }
 
