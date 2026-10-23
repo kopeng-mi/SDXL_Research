@@ -380,7 +380,13 @@ def cancel_job(job_id):
 
 # ---------- layout ----------
 THEME = gr.themes.Soft(primary_hue="indigo", neutral_hue="slate", radius_size="lg",
-                       font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"])
+                       font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"]).set(
+    # plain text labels instead of filled badges
+    block_title_background_fill="transparent", block_title_background_fill_dark="transparent",
+    block_title_text_color="*neutral_600", block_title_text_color_dark="*neutral_300",
+    block_label_background_fill="transparent", block_label_background_fill_dark="transparent",
+    block_title_text_weight="500",
+)
 CSS = """
 .gradio-container {max-width: 1400px !important; margin: auto;}
 #header {padding: 8px 14px; border-radius: 12px; background: var(--block-background-fill);}
@@ -403,8 +409,9 @@ def build() -> gr.Blocks:
                     z_model = gr.Dropdown(list(Z_MODELS), value="turbo Q8", allow_custom_value=True, label="Z-Image model", scale=2)
                     z_te = gr.Dropdown(list(Z_ENCODERS), value="official", allow_custom_value=True, label="Text encoder", scale=2)
                     z_quant = gr.Radio(["nf4", "int8"], value="nf4", label="Encoder size", scale=1)
-                    load_b = gr.Button("Load", variant="primary", scale=1)
-                    unload_b = gr.Button("Unload", scale=1)
+                    with gr.Column(scale=1, min_width=110):
+                        load_b = gr.Button("Load", variant="primary", size="sm")
+                        unload_b = gr.Button("Unload", size="sm")
                 kind.change(lambda k: [gr.update(visible=k == "SDXL")] * 2 + [gr.update(visible=k == "Z-Image")] * 3,
                             kind, [sdxl_model, vae, z_model, z_te, z_quant])
 
@@ -416,7 +423,7 @@ def build() -> gr.Blocks:
                                             placeholder="ohwx_person, a woman in a green silk saree, standing in a garden")
                         with gr.Row():
                             style = gr.Dropdown(list(STYLES), value="Photo", label="Style", scale=1)
-                            aspect = gr.Dropdown(list(ASPECTS), value="Portrait 896x1152", label="Size", scale=1)
+                            aspect = gr.Dropdown(list(ASPECTS), value="Portrait 896x1152", label="Size", scale=2)
                             count = gr.Slider(1, 4, 1, step=1, label="Images", scale=1)
                             seed = gr.Number(-1, label="Seed (-1 = random)", precision=0, scale=1)
                         go = gr.Button("Generate", variant="primary", elem_id="gen-btn")
@@ -640,6 +647,9 @@ def build() -> gr.Blocks:
             return [gr.update(choices=loras)] * N_LORAS + [gr.update(choices=models)] * 3
 
         ui.load(refresh_lists, None, [*lora_inputs[::2], sdxl_model, t_base, c_base])
+        # dropdowns start on their first choice without firing .change: fill dependents once
+        ui.load(show_dataset, ds_pick, ds_out)
+        ui.load(train_estimate, eta_in, t_eta)
     return ui
 
 
