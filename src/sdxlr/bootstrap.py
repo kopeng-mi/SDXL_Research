@@ -17,6 +17,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 KOHYA = REPO / "vendor" / "sd-scripts"
+MUSUBI = REPO / "vendor" / "musubi-tuner"
 VENV = Path(os.environ.get("SDXLR_VENV", "/content/venv"))
 VENV_PY = VENV / "bin" / "python"
 PYTHON = "3.12"  # uv-managed, never the Colab system Python (it changes often)
@@ -33,7 +34,7 @@ def _uv() -> str:
 
 def _inputs_hash() -> str:
     h = hashlib.sha256()
-    for p in (REPO / "pyproject.toml", KOHYA / "requirements.txt"):
+    for p in (REPO / "pyproject.toml", KOHYA / "requirements.txt", MUSUBI / "pyproject.toml"):
         h.update(p.read_bytes())
     return h.hexdigest()[:16]
 
@@ -54,6 +55,7 @@ def ensure_venv() -> Path:
     # kohya first (its -e . must resolve inside its own dir), then ours, which
     # pins the shared versions on top.
     pip("-r", "requirements.txt", cwd=KOHYA)
+    pip("-e", str(MUSUBI))  # same diffusers/transformers/accelerate pins as kohya
     pip("-e", str(REPO))
 
     STAMP.write_text(want)
