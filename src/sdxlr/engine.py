@@ -8,7 +8,8 @@ Rules (15 GB VRAM, ~12.7 GB RAM, no fast bf16):
     are dropped past MAX_ADAPTERS
   * prompt embeddings are cached, so seed/step changes skip re-encoding
   * out of memory: free cache, turn on VAE tiling, retry once
-  * inpaint reuses the loaded weights (from_pipe), no second copy
+  * inpaint reuses the loaded weights (from_pipe, fp16: without torch_dtype
+    from_pipe casts the shared UNet/VAE to fp32 in place and doubles VRAM)
 """
 
 from __future__ import annotations
@@ -192,7 +193,7 @@ class Engine:
         if job.image is not None:
             if self._inpaint is None:
                 from diffusers import StableDiffusionXLInpaintPipeline
-                self._inpaint = StableDiffusionXLInpaintPipeline.from_pipe(self.pipe)
+                self._inpaint = StableDiffusionXLInpaintPipeline.from_pipe(self.pipe, torch_dtype=torch.float16)
             img = job.image.convert("RGB")
             w, h = (img.width // 8) * 8, (img.height // 8) * 8
             return self._inpaint(image=img.resize((w, h)), mask_image=job.mask.convert("L").resize((w, h)),
