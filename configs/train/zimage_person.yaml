@@ -1,0 +1,19 @@
+# Z-Image LoRA on the Colab T4 (musubi-tuner). Trained on the Z-Image base
+# model, used on Z-Image Turbo for generation. Override with --set key=value.
+
+dit: null             # null = Comfy-Org/Z-Image base (bf16, stored as fp8 when fp8: true)
+resolution: 512       # 1024 runs out of memory on a T4; try 768 once 512 works
+batch_size: 1
+repeats: 4
+epochs: 10
+save_every: 1
+seed: 42
+
+network_dim: 16
+network_alpha: 16
+optimizer: adamw8bit
+lr: 1.0e-4
+flow_shift: 2.0       # musubi's suggested starting point for Z-Image
+
+fp8: true             # store DiT weights in fp8 (half the VRAM); compute stays fp16
+blocks_to_swap: 0     # >0 offloads blocks to CPU RAM; Colab has little RAM, use only if VRAM runs out
