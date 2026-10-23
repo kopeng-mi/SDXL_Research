@@ -30,6 +30,19 @@ from .prompt import encode_sdxl
 MAX_ADAPTERS = 12
 FP16_VAE = "madebyollin/sdxl-vae-fp16-fix"
 
+# Z-Image choices (any org/repo/file, URL or path also works)
+Z_REPO = "Tongyi-MAI/Z-Image-Turbo"  # tokenizer, VAE, scheduler, configs
+Z_MODELS = {
+    "turbo Q8": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q8_0.gguf",  # 7.2 GB, best quality
+    "turbo Q6": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q6_K.gguf",  # 5.9 GB
+    "turbo Q5": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q5_K_M.gguf",  # 5.6 GB
+    "turbo Q4": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q4_K_M.gguf",  # 5.0 GB
+}
+Z_ENCODERS = {
+    "official": "Tongyi-MAI/Z-Image-Turbo:text_encoder",
+    "abliterated": "BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1",  # fewer refusals in prompt following
+}
+
 SAMPLERS = {
     "dpmpp_2m_karras": ("DPMSolverMultistepScheduler", {"algorithm_type": "dpmsolver++", "use_karras_sigmas": True}),
     "dpmpp_2m_sde_karras": ("DPMSolverMultistepScheduler", {"algorithm_type": "sde-dpmsolver++", "use_karras_sigmas": True}),
@@ -97,6 +110,7 @@ def ram() -> str:
 class Engine:
     def __init__(self) -> None:
         self.pipe = None
+        self.kind: str | None = None  # "sdxl" | "zimage"
         self.model_path: str | None = None
         self.vae_mode: str | None = None
         self.adapters: OrderedDict[str, str] = OrderedDict()  # path -> adapter name
@@ -107,7 +121,7 @@ class Engine:
     # ---- model ----
     def unload(self) -> None:
         self.pipe = self._inpaint = None
-        self.model_path = self._sampler = None
+        self.kind = self.model_path = self._sampler = None
         self.adapters.clear()
         self._embeds.clear()
         gc.collect()
@@ -130,8 +144,49 @@ class Engine:
         pipe.set_progress_bar_config(disable=True)
         _fix_text_encoder_lora_keys(pipe)
         self.pipe = pipe.to("cuda")
-        self.model_path, self.vae_mode = path, vae
+        self.kind, self.model_path, self.vae_mode = "sdxl", path, vae
         return f"loaded {Path(path).name} in {time.time() - t:.0f}s | {vram()}"
+
+    def load_zimage(self, transformer: str = Z_MODELS["turbo Q8"], text_encoder: str = Z_ENCODERS["official"],
+                    te_quant: str = "nf4") -> str:
+        """Z-Image: GGUF (or safetensors) transformer + Qwen3 text encoder, fp16 with the T4 overflow fix.
+
+        transformer:  org/repo/file, URL or path (.gguf recommended on T4)
+        text_encoder: 'org/repo' or 'org/repo:subfolder'
+        te_quant:     nf4 (~2.5 GB) | int8 (~4.4 GB) | fp16 (~8 GB, may not fit next to Q8)
+        """
+        key = f"zimage|{transformer}|{text_encoder}|{te_quant}"
+        if self.pipe is not None and self.model_path == key:
+            return "already loaded"
+        from diffusers import GGUFQuantizationConfig, ZImagePipeline, ZImageTransformer2DModel
+        from transformers import AutoModel, BitsAndBytesConfig
+
+        from .fetch import MODELS, fetch
+        from .zimage_fp16 import patch
+
+        self.unload()
+        t = time.time()
+        dt = torch.float16
+        src = fetch(transformer, MODELS / "zimage")
+        kw = {"torch_dtype": dt, "config": Z_REPO, "subfolder": "transformer"}
+        if src.suffix == ".gguf":
+            kw["quantization_config"] = GGUFQuantizationConfig(compute_dtype=dt)
+        tr = ZImageTransformer2DModel.from_single_file(str(src), **kw)
+
+        repo, _, sub = text_encoder.partition(":")
+        q = None
+        if te_quant == "nf4":
+            q = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=dt)
+        elif te_quant == "int8":
+            q = BitsAndBytesConfig(load_in_8bit=True)
+        te = AutoModel.from_pretrained(repo, subfolder=sub or "", dtype=dt, quantization_config=q)
+
+        pipe = ZImagePipeline.from_pretrained(Z_REPO, transformer=tr, text_encoder=te, torch_dtype=dt)
+        pipe.set_progress_bar_config(disable=True)
+        self.pipe = pipe.to("cuda")
+        patch(self.pipe.transformer)  # fp16 on T4 otherwise gives black images
+        self.kind, self.model_path, self.vae_mode = "zimage", key, None
+        return f"loaded Z-Image ({Path(str(src)).name}, TE {te_quant}) in {time.time() - t:.0f}s | {vram()}"
 
     def _set_sampler(self, name: str) -> None:
         if name == self._sampler:
@@ -182,7 +237,27 @@ class Engine:
         self._embeds.move_to_end(key)
         return self._embeds[key]
 
+    def _run_zimage(self, job: Job, seed: int) -> list[Image.Image]:
+        # Qwen text encoder: no A1111 weights / clip skip; negative only matters with cfg > 1
+        self.set_loras(job.loras)
+        gen = [torch.Generator("cpu").manual_seed(seed + i) for i in range(job.count)]
+        common = dict(prompt=[job.prompt] * job.count, num_inference_steps=job.steps, guidance_scale=job.cfg,
+                      generator=gen)
+        if job.cfg > 1 and job.negative:
+            common["negative_prompt"] = [job.negative] * job.count
+        if job.image is not None:
+            if self._inpaint is None:
+                from diffusers import ZImageInpaintPipeline
+                self._inpaint = ZImageInpaintPipeline.from_pipe(self.pipe, torch_dtype=torch.float16)
+            img = job.image.convert("RGB")
+            w, h = (img.width // 16) * 16, (img.height // 16) * 16
+            return self._inpaint(image=img.resize((w, h)), mask_image=job.mask.convert("L").resize((w, h)),
+                                 width=w, height=h, strength=job.strength, **common).images
+        return self.pipe(width=job.width, height=job.height, **common).images
+
     def _run(self, job: Job, seed: int) -> list[Image.Image]:
+        if self.kind == "zimage":
+            return self._run_zimage(job, seed)
         lora_key = tuple(sorted((p, round(w, 4)) for p, w in job.loras if p and w))
         self.set_loras(job.loras)
         self._set_sampler(job.sampler)
