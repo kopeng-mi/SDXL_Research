@@ -57,17 +57,27 @@ def run(args: list[str], cwd: str | Path = REPO, progress_every: float = 5.0) ->
         raise SystemExit(f"failed with exit code {proc.returncode}")
 
 
+SECRETS = ("HF_TOKEN", "CIVITAI_TOKEN")
+
+
+def load_secrets() -> dict[str, bool]:
+    """Export tokens from Colab Secrets into the env (child processes inherit them).
+    Returns which were found; values are never printed."""
+    found = {}
+    for key in SECRETS:
+        if not os.environ.get(key):
+            try:
+                from google.colab import userdata  # type: ignore
+                os.environ[key] = userdata.get(key)
+            except Exception:
+                pass
+        found[key] = bool(os.environ.get(key))
+    return found
+
+
 def hf_token() -> str | None:
-    """HF token from env or Colab secrets (key: HF_TOKEN)."""
-    if tok := os.environ.get("HF_TOKEN"):
-        return tok
-    try:
-        from google.colab import userdata  # type: ignore
-        tok = userdata.get("HF_TOKEN")
-        os.environ["HF_TOKEN"] = tok
-        return tok
-    except Exception:
-        return None
+    load_secrets()
+    return os.environ.get("HF_TOKEN")
 
 
 if __name__ == "__main__":

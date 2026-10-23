@@ -24,6 +24,13 @@ def fetch(src: str, dst_dir: Path) -> Path:
         return Path(src)
     dst_dir.mkdir(parents=True, exist_ok=True)
     if src.startswith("http"):
+        if "civitai.com" in src:
+            # file name comes from Content-Disposition; token from Colab Secrets / env
+            import os
+            hdr = ["-H", f"Authorization: Bearer {os.environ['CIVITAI_TOKEN']}"] if os.environ.get("CIVITAI_TOKEN") else []
+            r = subprocess.run(["curl", "-fLJ", "--retry", "3", *hdr, "--output-dir", str(dst_dir), "-O",
+                                "-w", "%{filename_effective}", src], check=True, capture_output=True, text=True)
+            return Path(r.stdout.strip())
         dst = dst_dir / src.split("?")[0].rsplit("/", 1)[-1]
         if not dst.exists():
             subprocess.run(["curl", "-fL", "--retry", "3", "-o", str(dst), src], check=True)
