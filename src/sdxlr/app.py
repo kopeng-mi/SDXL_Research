@@ -19,7 +19,7 @@ import numpy as np
 import yaml
 from PIL import Image, PngImagePlugin
 
-from .engine import SAMPLERS, Engine, Job, ram, vram
+from .engine import SAMPLERS, Z_ENCODERS, Z_MODELS, Engine, Job, ram, vram
 from .fetch import LORAS, MODELS, WORK, fetch, fetch_loras, list_loras, list_models
 
 N_LORAS = 6
@@ -44,14 +44,27 @@ def _presets() -> list[str]:
 
 
 def _status(msg: str = "") -> str:
-    model = Path(eng.model_path).name if eng.model_path else "no model"
+    if not eng.model_path:
+        model = "no model"
+    elif eng.kind == "zimage":
+        model = "Z-Image " + Path(eng.model_path.split("|")[1]).name
+    else:
+        model = Path(eng.model_path).name
     return f"{msg}  \n**{model}** | {vram()} | {ram()} | {len(eng.adapters)} LoRAs cached".strip()
 
 
-def load_model(path, vae):
-    if not path:
-        return _status("pick a model first")
-    return _status(eng.load(path, vae))
+def load_model(kind, path, vae, z_model, z_te, z_quant):
+    keep = (gr.update(), gr.update(), gr.update())
+    try:
+        if kind == "Z-Image":
+            msg = eng.load_zimage(Z_MODELS.get(z_model, z_model), Z_ENCODERS.get(z_te, z_te), z_quant)
+            # turbo defaults: 9 steps, no CFG
+            return _status(msg), gr.update(value=9), gr.update(value=0), gr.update(value=1024)
+        if not path:
+            return _status("pick a model first"), *keep
+        return _status(eng.load(path, vae)), gr.update(value=25), gr.update(value=5), gr.update()
+    except Exception as e:
+        return _status(f"load failed: {type(e).__name__}: {e}"), *keep
 
 
 def unload():
@@ -161,10 +174,18 @@ def load_preset(name):
 def build() -> gr.Blocks:
     with gr.Blocks(title="SDXL_Research") as ui:
         with gr.Row():
-            model = gr.Dropdown(_models(), label="Base model", scale=4)
+            kind_r = gr.Radio(["SDXL", "Z-Image"], value="SDXL", label="Type", scale=1)
+            model = gr.Dropdown(_models(), label="SDXL checkpoint", scale=4)
             vae = gr.Radio(["fp16fix", "model"], value="fp16fix", label="VAE", scale=1)
+            z_model = gr.Dropdown(list(Z_MODELS), value="turbo Q8", allow_custom_value=True, visible=False,
+                                  label="Z-Image model (or paste org/repo/file.gguf)", scale=3)
+            z_te = gr.Dropdown(list(Z_ENCODERS), value="official", allow_custom_value=True, visible=False,
+                               label="Text encoder (or paste org/repo[:subfolder])", scale=2)
+            z_quant = gr.Radio(["nf4", "int8", "fp16"], value="nf4", visible=False, label="Encoder precision", scale=1)
             load_b = gr.Button("Load", variant="primary", scale=1)
             unload_b = gr.Button("Unload (free VRAM)", scale=1)
+        kind_r.change(lambda k: [gr.update(visible=k == "SDXL")] * 2 + [gr.update(visible=k == "Z-Image")] * 3,
+                      kind_r, [model, vae, z_model, z_te, z_quant])
         with gr.Accordion("Download models / LoRAs", open=False):
             with gr.Row():
                 src = gr.Textbox(label="org/repo/file, URL or path (.safetensors or .zip of LoRAs)", scale=4)
@@ -214,7 +235,7 @@ def build() -> gr.Blocks:
                 refresh_b = gr.Button("Refresh lists")
 
         base_inputs = [prompt, negative, steps, cfg, sampler, width, height, seed, count, clip_skip]
-        load_b.click(load_model, [model, vae], status)
+        load_b.click(load_model, [kind_r, model, vae, z_model, z_te, z_quant], [status, steps, cfg, width])
         unload_b.click(unload, None, status)
         fetch_b.click(do_fetch, [src, kind], [model, preset_pick, status])
         refresh_b.click(refresh, None, [model, preset_pick, *lora_inputs[::2]])
@@ -229,11 +250,16 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--share", action="store_true", help="public gradio.live link")
     ap.add_argument("--port", type=int, default=7860)
-    ap.add_argument("--model", help="load this model at start")
+    ap.add_argument("--model", help="load this SDXL model at start")
+    ap.add_argument("--zimage", help="load Z-Image at start: a preset name (e.g. 'turbo Q8') or org/repo/file.gguf")
+    ap.add_argument("--te", default="official", help="Z-Image text encoder preset or org/repo[:subfolder]")
+    ap.add_argument("--te-quant", default="nf4", choices=["nf4", "int8", "fp16"])
     a = ap.parse_args()
     for d in (MODELS, LORAS, PRESETS, OUTPUTS):
         d.mkdir(parents=True, exist_ok=True)
-    if a.model:
+    if a.zimage:
+        print(eng.load_zimage(Z_MODELS.get(a.zimage, a.zimage), Z_ENCODERS.get(a.te, a.te), a.te_quant), flush=True)
+    elif a.model:
         print(eng.load(str(fetch(a.model, MODELS))), flush=True)
     ui = build()
     ui.queue(default_concurrency_limit=1, max_size=8)  # one GPU job at a time

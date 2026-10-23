@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .engine import Engine, Job
+from .engine import Z_ENCODERS, Z_MODELS, Engine, Job
 from .fetch import LORAS, MODELS, WORK, fetch, list_loras
 
 OUT = WORK / "compare"
@@ -61,7 +61,10 @@ def stitch(rows: list[str], cols: list[str], cells: dict, thumb: int = 320) -> I
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True)
+    ap.add_argument("--model", required=True, help="SDXL checkpoint, or with --zimage a Z-Image preset/.gguf")
+    ap.add_argument("--zimage", action="store_true")
+    ap.add_argument("--te", default="official")
+    ap.add_argument("--te-quant", default="nf4")
     ap.add_argument("--loras", default="*.safetensors", help="glob over downloaded + trained LoRAs")
     ap.add_argument("--combos", nargs="*", default=[], help="'a.safetensors:0.44+b.safetensors:0.44'; strength = multiplier")
     ap.add_argument("--strengths", nargs="+", type=float, default=[0.78, 0.82, 0.88])
@@ -95,7 +98,10 @@ def main() -> None:
         state = {"params": params, "cells": {}, "errors": {}}
 
     eng = Engine()
-    print(eng.load(str(fetch(a.model, MODELS))), flush=True)
+    if a.zimage:
+        print(eng.load_zimage(Z_MODELS.get(a.model, a.model), Z_ENCODERS.get(a.te, a.te), a.te_quant), flush=True)
+    else:
+        print(eng.load(str(fetch(a.model, MODELS))), flush=True)
     todo = [(r, c, s) for r in rows for c, s in zip(cols, a.strengths) if f"{r}|{c}" not in state["cells"]]
     print(f"{len(rows)} rows x {len(cols)} strengths, {len(todo)} to render", flush=True)
     t0 = time.time()
