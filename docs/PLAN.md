@@ -53,6 +53,8 @@ diffusers/transformers/accelerate, so everything shares one venv.
 | Z-Image Turbo, fp16 + overflow fix | works, **~42 s/image**, peak 11.9 GB (Q8 GGUF + nf4 encoder) |
 | Indian faces | Z-Image much better: right faces, skin tones, clothes, cultural details. Pony V17: generic faces, westernized details, ignores clothes, NSFW drift ("saree" became lingerie) |
 | Z-Image seed variety | low (turbo trait): two seeds look almost the same |
+| Z-Image LoRA training (musubi) | base DiT, fp16 + fp8 weight storage, 512 px, batch 1: **~5.7 s/step**, peak 13.9 GB VRAM, 9.8 GB RAM; 1024 px expected to OOM |
+| Z-Image Turbo in the engine | 768x1024, 9 steps: ~30 s/image; first load ~9 min (downloads) |
 
 ## Bugs found and fixed
 
@@ -96,10 +98,15 @@ Done (branch `step1-scaffold`): bootstrap, notebook builder, captioner, SDXL
 trainer, dataset fetch, prompt encoder, engine (SDXL + Z-Image), compare,
 first Gradio app, job queue, presets, settings, Z-Image trainer (untested).
 
-In progress: Z-Image LoRA training test on T4 (512 px, fp16, fp8 weight storage).
+Z-Image LoRA training works on T4 (512 px). In progress: loading the trained
+LoRA on Turbo after diffusers conversion, and Z-Image inpaint.
+
+ETA rule of thumb for the Train tab: steps = images x repeats x epochs / batch;
+SDXL 1024 px batch 3 ~5.1 s/step; Z-Image 512 px batch 1 ~5.7 s/step; plus
+caching (~2-4 min) and first-run downloads.
 
 Next:
-1. Z-Image training result -> ETA table and Train tab options
+1. Confirm Z-Image LoRA effect on Turbo; try 768 px training
 2. New UI (tabs above) on top of JobManager
 3. Fast mode for SDXL (Lightning/Hyper LoRA), measure speeds
 4. More captioners (e.g. WD tagger for tag-style captions)
