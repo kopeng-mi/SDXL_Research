@@ -5,6 +5,10 @@
 # %%
 #@title LoRA comparison grid
 GRID_NAME = "grid1"  #@param {type:"string"}
+MODEL_TYPE = "SDXL"  #@param ["SDXL", "Z-Image"]
+Z_MODEL = "turbo Q8"  #@param ["turbo Q8", "turbo Q6", "turbo Q5", "turbo Q4"] {allow-input: true}
+Z_TEXT_ENCODER = "official"  #@param ["official", "abliterated"] {allow-input: true}
+#@markdown Z-Image: use STEPS 9, CFG 0; prompt weights like (word:1.2) are SDXL-only
 LORA_GLOB = "*.safetensors"  #@param {type:"string"}
 COMBOS = ""  #@param {type:"string"}
 #@markdown COMBOS (optional) replaces LORA_GLOB: `face_a.safetensors:0.44+face_b.safetensors:0.44, other.safetensors:0.8`. Strengths then multiply the mix.
@@ -19,7 +23,9 @@ WIDTH = 896  #@param {type:"integer"}
 HEIGHT = 1152  #@param {type:"integer"}
 SEED = 42  #@param {type:"integer"}
 
-args = ["-m", "sdxlr.compare", "--name", GRID_NAME, "--model", BASE_MODEL, "--strengths", *STRENGTHS.split(),
+model_args = (["--model", Z_MODEL, "--zimage", "--te", Z_TEXT_ENCODER] if MODEL_TYPE == "Z-Image"
+              else ["--model", BASE_MODEL])
+args = ["-m", "sdxlr.compare", "--name", GRID_NAME, *model_args, "--strengths", *STRENGTHS.split(),
         "--prompt", PROMPT, "--negative", NEGATIVE, "--steps", STEPS, "--cfg", CFG, "--sampler", SAMPLER,
         "--clip-skip", CLIP_SKIP, "--width", WIDTH, "--height", HEIGHT, "--seed", SEED]
 combos = [c.strip() for c in COMBOS.split(",") if c.strip()]
