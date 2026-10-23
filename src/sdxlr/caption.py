@@ -26,10 +26,13 @@ MODELS = {
 # LoRA should learn from the pixels (face, body, skin).
 IDENTITY_PROMPT = (
     "Write a training caption for this photo in one or two sentences, 30 to 50 words. "
-    "Describe the clothing, pose, camera angle, framing, background and lighting. "
-    "Do not describe the person's face, facial features, body shape, skin, age or ethnicity. "
-    "Refer to the person only as 'a woman' or 'a man'. "
-    "Do not start with 'The image' or 'This photo'. Plain text only."
+    "Begin with 'a {cls}' and call the main subject only 'a {cls}'. "
+    "Describe the clothing and accessories, pose, expression, camera angle, framing, "
+    "background and lighting. "
+    "Do not describe the subject's face, facial features, eye color, body shape, figure, "
+    "skin, age or ethnicity. "
+    "Only describe what is visible; do not mention a photographer or invent a story. "
+    "Plain text only, no lists."
 )
 
 EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -107,7 +110,8 @@ def main() -> None:
     ap.add_argument("--out", type=Path, help="caption dir (default: next to images)")
     ap.add_argument("--model", default="qwen", help=f"{', '.join(MODELS)} or a HF model id")
     ap.add_argument("--trigger", default="ohwx_person", help="prepended to every caption; '' for none")
-    ap.add_argument("--prompt", default=IDENTITY_PROMPT)
+    ap.add_argument("--class-word", default="woman", help="what the subject is called in captions")
+    ap.add_argument("--prompt", default=IDENTITY_PROMPT, help="{cls} is replaced by --class-word")
     ap.add_argument("--max-new-tokens", type=int, default=120)
     ap.add_argument("--limit", type=int, default=0, help="caption only the first N (preview)")
     ap.add_argument("--overwrite", action="store_true")
@@ -133,7 +137,7 @@ def main() -> None:
     for i, p in enumerate(todo, 1):
         try:
             t = time.time()
-            text = _clean(cap(_load_image(p), a.prompt, a.max_new_tokens))
+            text = _clean(cap(_load_image(p), a.prompt.replace("{cls}", a.class_word), a.max_new_tokens))
             final = f"{a.trigger}, {text}" if a.trigger else text
             (out / f"{p.stem}.txt").write_text(final, encoding="utf-8")
             done += 1
