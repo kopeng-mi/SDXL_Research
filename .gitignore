@@ -1,0 +1,38 @@
+# local reference notebooks (personal data)
+/Lora_Tra_XL_patch_v1_*.ipynb
+/compare_grid.ipynb
+/florence_captioner.ipynb
+/fooocus_v2.ipynb
+
+# local agent tooling
+/.agents/
+/.claude/
+/skills-lock.json
+
+# weights, data, outputs
+*.safetensors
+*.ckpt
+*.gguf
+*.pt
+*.bin
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.webp
+outputs/
+datasets/
+models/
+runs/
+
+# secrets
+.env
+*.token
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
