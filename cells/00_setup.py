@@ -3,8 +3,9 @@
 # Caption, train, compare and generate SDXL LoRAs on the Colab free T4.
 #
 # 1. **Runtime > Change runtime type > T4 GPU**
-# 2. Add your Hugging Face token in **Secrets** (key icon) as `HF_TOKEN` (needed for private repos)
-# 3. Run **Setup** once per session; re-runs skip finished steps.
+# 2. **Secrets** (key icon, left): add `HF_TOKEN` (needed for private repos and sync);
+#    optional `CIVITAI_TOKEN` for Civitai downloads. Allow notebook access.
+# 3. Run **Setup** (installs everything; re-runs skip finished steps), then **Launch**.
 # %%
 #@title Setup: repo + venv (idempotent)
 import os, subprocess, sys
@@ -28,4 +29,5 @@ r = subprocess.run([sys.executable, "-m", "sdxlr.bootstrap"], stdout=subprocess.
                    env={**os.environ, "PYTHONPATH": str(REPO / "src")})
 print(r.stdout[-3000:])
 assert r.returncode == 0, "setup failed (see above)"
-nb.hf_token()
+found = nb.load_secrets()
+print("secrets:", ", ".join(f"{k} {'found' if v else 'missing'}" for k, v in found.items()))
