@@ -3,6 +3,7 @@
   * z_embed_key      - what a Z-Image prompt embedding depends on
   * reuse_plan       - which loaded Z-Image parts survive a model change
   * needs_tiling     - VAE tiling only for big decodes
+  * tile_starts      - the upscale tile plan along one side
 """
 
 from __future__ import annotations
@@ -35,3 +36,18 @@ def reuse_plan(old_key: str | None, transformer: str, text_encoder: str, te_quan
 
 def needs_tiling(width: int, height: int) -> bool:
     return width * height > TILING_MP * 1e6
+
+
+def tile_starts(length: int, max_tile: int, overlap: int, multiple: int) -> tuple[list[int], int]:
+    """Upscale tiles along one side: (start offsets, tile size). The fewest tiles of at most max_tile px that
+    overlap by at least `overlap`, all the same size (a multiple of `multiple`) and spread evenly. Fewer, evenly
+    sized tiles were the T4 win: 1632 px took 2 tiles of 880 instead of a 1024 + a 608-offset one."""
+    if length <= max_tile:
+        return [0], length
+    n = -(-(length - overlap) // (max_tile - overlap))  # ceil
+    size = -(-(length + (n - 1) * overlap) // n)
+    size = min(max_tile, -(-size // multiple) * multiple, length)
+    last = length - size
+    starts = sorted({round(i * last / (n - 1)) // multiple * multiple for i in range(n - 1)} | {last})
+    return starts, size
+

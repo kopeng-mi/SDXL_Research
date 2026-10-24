@@ -218,6 +218,9 @@ class Engine:
             if src.suffix == ".gguf":
                 kw["quantization_config"] = GGUFQuantizationConfig(compute_dtype=dt)
             tr = ZImageTransformer2DModel.from_single_file(str(src), **kw)
+            status("Moving the model to GPU")
+            tr = tr.to("cuda")  # its RAM is free before the text encoder loads (Q8 peaked at 9.6 of 12.7 GB on T4)
+            gc.collect()
             name = Path(str(src)).name
         if old_te is not None:
             te = old_te
@@ -384,6 +387,13 @@ class Engine:
         torch.cuda.reset_peak_memory_stats()
         return self._cn_pipes[key]
 
+    def _drop_cn(self) -> None:
+        """The ControlNet (~2 GB VRAM) stays only while ops use it: next to Q8 it pushed the next upscale into OOM retries."""
+        if self._cn is not None:
+            self._cn, self._cn_pipes = None, {}
+            gc.collect()
+            torch.cuda.empty_cache()
+
     def _log_peak(self, what: str) -> None:
         print(f"engine worker: {what}: peak VRAM {torch.cuda.max_memory_allocated() / 2**30:.1f} GB, {ram()}",
               file=sys.stderr, flush=True)
@@ -524,6 +534,8 @@ class Engine:
         img = crop.convert("RGB")
         m = mask.convert("L")
         gen = torch.Generator("cpu").manual_seed(job.seed if job.seed >= 0 else 0)
+        if blend != "controlnet":
+            self._drop_cn()
         if blend == "controlnet":
             if self.kind != "zimage":
                 raise RuntimeError("The better blend is for Z-Image only.")
@@ -555,13 +567,15 @@ class Engine:
                              strength=job.strength, num_inference_steps=job.steps,
                              guidance_scale=job.cfg, generator=gen, **emb, **_step_cb(job)).images[0]
 
-    def upscale(self, job: Job, scale: float = 2.0, tile: int = 1024, overlap: int = 128,
+    def upscale(self, job: Job, scale: float = 2.0, tile: int = 1280, overlap: int = 128,
                 on_tile=None, tile_cn: bool = False) -> tuple[Image.Image, int, str]:
         """Enlarge job.image by `scale`, then refine overlapping tiles with image-to-image (job.prompt,
         job.strength) and blend them with feathered edges. on_tile(done, total) reports progress."""
         import numpy as np
         if self.pipe is None:
             raise RuntimeError("no model loaded")
+        if not tile_cn:
+            self._drop_cn()
         t = time.time()
         seed = job.seed if job.seed >= 0 else int(torch.randint(0, 2**31 - 1, (1,)))
         m = 16 if self.kind == "zimage" else 8
@@ -571,13 +585,10 @@ class Engine:
         cw, ch = cap_size(W, H)  # 8 MP output cap
         W, H = (cw // m) * m, (ch // m) * m
         big = src.resize((W, H), Image.LANCZOS)
-        if W <= tile and H <= tile:
-            boxes = [(0, 0, W, H)]
-        else:
-            step = tile - overlap
-            xs = sorted({*range(0, max(W - tile, 0) + 1, step), max(W - tile, 0)})
-            ys = sorted({*range(0, max(H - tile, 0) + 1, step), max(H - tile, 0)})
-            boxes = [(x, y, min(x + tile, W), min(y + tile, H)) for y in ys for x in xs]
+        from .keys import tile_starts
+        xs, tw = tile_starts(W, tile, overlap, m)
+        ys, th = tile_starts(H, tile, overlap, m)
+        boxes = [(x, y, min(x + tw, W), min(y + th, H)) for y in ys for x in xs]
         acc = np.zeros((H, W, 3), np.float32)
         wsum = np.zeros((H, W, 1), np.float32)
         for i, (x0, y0, x1, y1) in enumerate(boxes):

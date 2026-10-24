@@ -77,6 +77,20 @@ def test_controlnet_lite_config() -> None:
     assert set(CONTROLNETS) == {"union", "tile"} and all("lite" in f and f.endswith(".safetensors") for _, f in CONTROLNETS.values())
 
 
+def test_tile_plan() -> None:
+    for length in (512, 1280, 1281, 1632, 2048, 2912, 4000, 5792):
+        for m in (8, 16):
+            starts, size = keys.tile_starts(length, 1280, 128, m)
+            assert size <= 1280 and size % m == 0 or size == length, (length, m, size)
+            assert starts[0] == 0 and starts[-1] + size == length, (length, starts, size)
+            for a, b in zip(starts, starts[1:]):
+                assert a + size - b >= 128 - m, ("overlap too small", length, starts, size)
+                assert b > a
+            n_old = len(sorted({*range(0, max(length - 1024, 0) + 1, 896), max(length - 1024, 0)}))
+            assert len(starts) <= n_old, ("more tiles than the old 1024 plan", length, starts)
+    assert keys.tile_starts(1632, 1280, 128, 16) == ([0, 752], 880)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in [(k, v) for k, v in list(globals().items()) if k.startswith("test_")]:

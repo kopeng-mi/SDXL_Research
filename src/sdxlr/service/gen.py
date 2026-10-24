@@ -114,14 +114,26 @@ def _prefetch(task, *args) -> None:
 def _check_ram(kind, sdxl_path, z_transformer, te_quant) -> None:
     """Refuse a load that cannot fit. If another model is in the worker, stop it and check again: its RAM
     counts against the check and the load would drop it anyway (a model switch otherwise keeps torch warm)."""
+    import time
+
     from . import guard
     try:
         guard.check_ram(kind, sdxl_path, z_transformer, te_quant, engc.beat, jm)
+        return
     except ValueError:
-        if not engc.loaded:
-            raise
-        engc.kill()
-        guard.check_ram(kind, sdxl_path, z_transformer, te_quant, engc.beat, jm)
+        if engc.loaded:
+            engc.kill()
+    # a worker that just stopped (killed here, by the RAM guard, or crashed) gives its memory back over a few
+    # seconds: on the T4 the check right after a guard kill saw 1 GB free and refused a load that fits
+    deadline = time.time() + 15
+    while True:
+        try:
+            guard.check_ram(kind, sdxl_path, z_transformer, te_quant, engc.beat, jm)
+            return
+        except ValueError:
+            if time.time() > deadline:
+                raise
+            time.sleep(1)
 
 
 def _load(S, task) -> None:
