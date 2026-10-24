@@ -473,8 +473,8 @@ def build() -> gr.Blocks:
         code_store = gr.BrowserState("", storage_key="sdxlr_session")
         with gr.Group(elem_id="header"):
             with gr.Row(equal_height=True):
-                header = gr.Markdown(_header(), scale=5)
-                code_md = gr.Markdown("", scale=1, min_width=120)
+                header = gr.Markdown(_header(), scale=1)
+                code_md = gr.Markdown("", scale=0, min_width=130)
                 code_in = gr.Textbox(placeholder="code", show_label=False, max_length=4, scale=0, min_width=80,
                                      container=False)
                 code_go = gr.Button("Resume", size="sm", scale=0, min_width=80)
