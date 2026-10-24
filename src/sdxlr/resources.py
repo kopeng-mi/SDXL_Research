@@ -128,48 +128,50 @@ def _bar(title: str, total: float, blocks: list[tuple[str, float]], preview: tup
             f'<div class="rb-num">{shown:.1f} / {total:.1f} GB</div></div>')
 
 
-def bars(eng, jm, preview: tuple[str, float] | None = None) -> str:
-    rows = []
-    # VRAM
+def usage(eng, jm) -> dict[str, tuple[float, list[tuple[str, float]]]]:
+    """{"VRAM"|"RAM"|"Disk": (total GB, [(block, GB), ...])}."""
+    out = {}
     if torch.cuda.is_available():
         free, total = (x / GB for x in torch.cuda.mem_get_info())
         parts = model_parts(eng)
         own = sum(g for _, g in parts)
         cache = max(torch.cuda.memory_reserved() / GB - own, 0)
-        blocks = [(f"{eng.kind.upper() if eng.kind == 'sdxl' else 'Z-Image'} {p}", g) for p, g in parts]
+        name = "SDXL" if eng.kind == "sdxl" else "Z-Image"
+        blocks = [(f"{name} {p}", g) for p, g in parts]
         if cache > 0.05:
             blocks.append(("working memory", cache))
         gpu = _gpu_procs()
         for j in jm.jobs.values():
             if j.status == "running" and j.gpu and j.proc:
-                g = sum(gpu.get(p, 0) for p in _tree_pids(j.proc.pid))
-                blocks.append((f"job: {j.kind}", g))
-        used = total - free
+                blocks.append((f"job: {j.kind}", sum(gpu.get(p, 0) for p in _tree_pids(j.proc.pid))))
         known = sum(g for _, g in blocks)
-        if used - known > 0.3:
-            blocks.append(("other (CUDA context)", used - known))
-        if preview and eng.pipe is not None:  # loading replaces the current model: show it in that space
-            blocks = [b for b in blocks if not b[0].startswith(("SDXL", "Z-Image", "LoRAs", "working"))]
-        rows.append(_bar("VRAM", total, blocks, preview))
-    # RAM
+        if total - free - known > 0.3:
+            blocks.append(("other (CUDA context)", total - free - known))
+        out["VRAM"] = (total, blocks)
     m = psutil.virtual_memory()
-    total, used = m.total / GB, (m.total - m.available) / GB
-    blocks = [("app", _tree_rss(os.getpid()) - sum(_tree_rss(j.proc.pid) for j in jm.jobs.values()
-                                                    if j.status == "running" and j.proc))]
-    for j in jm.jobs.values():
-        if j.status == "running" and j.proc:
-            blocks.append((f"job: {j.kind}", _tree_rss(j.proc.pid)))
-    blocks.append(("system + other", max(used - sum(g for _, g in blocks), 0)))
-    rows.append(_bar("RAM", total, blocks))
-    rows.append(_disk())
+    running = [j for j in jm.jobs.values() if j.status == "running" and j.proc]
+    blocks = [("app", _tree_rss(os.getpid()) - sum(_tree_rss(j.proc.pid) for j in running))]
+    blocks += [(f"job: {j.kind}", _tree_rss(j.proc.pid)) for j in running]
+    blocks.append(("system + other", max((m.total - m.available) / GB - sum(g for _, g in blocks), 0)))
+    out["RAM"] = (m.total / GB, blocks)
+    out["Disk"] = _disk()
+    return out
+
+
+def bars(eng, jm, preview: tuple[str, float] | None = None) -> str:
+    rows = []
+    for name, (total, blocks) in usage(eng, jm).items():
+        if name == "VRAM" and preview and eng.pipe is not None:  # loading replaces the current model
+            blocks = [b for b in blocks if not b[0].startswith(("SDXL", "Z-Image", "working"))]
+        rows.append(_bar(name, total, blocks, preview if name == "VRAM" else None))
     return '<div class="rb">' + "".join(rows) + "</div>"
 
 
-_disk_cache: list = [0.0, ""]
+_disk_cache: list = [0.0, None]
 
 
-def _disk() -> str:
-    """Disk bar; folder sizes are walked at most every 15 s."""
+def _disk() -> tuple[float, list[tuple[str, float]]]:
+    """Folder sizes are walked at most every 15 s."""
     if time.time() - _disk_cache[0] > 15:
         d = shutil.disk_usage("/content" if Path("/content").exists() else ".")
         work = Path("/content/work")
@@ -177,7 +179,7 @@ def _disk() -> str:
                   ("LoRAs + runs", _dir_gb(work / "loras") + _dir_gb(work / "runs")),
                   ("datasets + outputs", _dir_gb(work / "datasets") + _dir_gb(work / "outputs"))]
         blocks.append(("system + venv", max((d.total - d.free) / GB - sum(g for _, g in blocks), 0)))
-        _disk_cache[:] = [time.time(), _bar("Disk", d.total / GB, blocks)]
+        _disk_cache[:] = [time.time(), (d.total / GB, blocks)]
     return _disk_cache[1]
 
 
