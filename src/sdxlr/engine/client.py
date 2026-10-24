@@ -1,11 +1,14 @@
 """The engine as the web process sees it: a worker process it owns and restarts.
 
 No torch here. One op at a time (callers keep the user to one Generate); a
-second concurrent call waits on _call_lock. Cancel: first ask — the worker
-stops at the next step or stage boundary; if it cannot stop within
-CANCEL_KILL_SECS (a model load is not interruptible), kill it, and the next
-request starts a fresh worker. A dead worker is reported with a plain
-sentence; nothing the user made is lost.
+second concurrent call waits on _call_lock. A reader thread per worker always
+drains the pipe: heartbeats update the mirrored state at any time, other
+events go to the running call (events of an abandoned request are dropped).
+Cancel: first ask — the worker stops at the next step or stage boundary; if
+it cannot stop within CANCEL_KILL_SECS (a model load is not interruptible),
+kill it, and the next request starts a fresh worker. A dead worker is
+reported with a plain sentence, also when it died while idle; nothing the
+user made is lost.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import queue
 import sys
 import threading
 import time
@@ -26,6 +30,9 @@ from ..activity import Cancelled, log
 CANCEL_KILL_SECS = 8.0
 DEATH_MSG = ("The image engine stopped (most likely out of memory). Your images are safe; "
              "press Generate and it starts again.")
+LOW_RAM_MSG = ("The image engine was stopped because the VM was low on memory. Your images are safe; "
+               "press Generate to start it again.")
+TERMINAL = ("result", "error", "cancelled")  # the last event of a request
 
 
 class WorkerDied(RuntimeError):
@@ -56,20 +63,30 @@ class EngineClient:
         self.model_path: str | None = None
         self.vae_mode: str | None = None
         self.adapters: dict[str, str] = {}
-        self._call_lock = threading.Lock()
-        self._busy = False
-        self._killed = False  # set by kill(): the reader reports Cancelled, not death
+        self._call_lock = threading.Lock()  # one op at a time
+        self._lock = threading.RLock()  # guards the worker handles and the request bookkeeping
+        self._gen = 0  # bumped whenever a worker is replaced or killed; its old reader then stops
+        self._cur: str | None = None  # id of the running call
+        self._q: queue.Queue | None = None  # events for the running call
+        self._pending: set[str] = set()  # sent, no final event yet (an abandoned op may still run)
+        self.died_idle = False  # the worker stopped with no call running: the next call reports it once
+        self.death_msg = DEATH_MSG
         self._stale_checked = False
         self.on_death = None  # guard hook: export logs when the worker dies
 
     # ---- state (from heartbeats) ----
     @property
     def alive(self) -> bool:
-        return self.proc is not None and self.proc.is_alive()
+        p = self.proc
+        return p is not None and p.is_alive()
 
     @property
     def loaded(self) -> bool:
-        return self.model_path is not None
+        return self.model_path is not None and self.alive
+
+    @property
+    def busy(self) -> bool:
+        return self._cur is not None
 
     def _reset(self) -> None:
         self.kind = self.model_path = self.vae_mode = None
@@ -83,6 +100,17 @@ class EngineClient:
         self.vae_mode = ev.get("vae_mode")
         self.adapters = ev.get("adapters") or {}
 
+    def _apply_loaded(self, args: dict, result: dict) -> None:
+        """State right after a load, before the next heartbeat says so."""
+        if result.get("state"):
+            self._apply_beat({**self.beat, **result["state"]})
+        elif args.get("kind") == "zimage":
+            from ..paths import z_key
+            self.kind, self.vae_mode = "zimage", None
+            self.model_path = z_key(args["transformer"], args["text_encoder"], args["te_quant"])
+        else:
+            self.kind, self.model_path, self.vae_mode = "sdxl", args.get("path"), args.get("vae", "fp16fix")
+
     # ---- process ----
     def _kill_stale(self) -> None:
         """A worker left by an earlier web process (crash, restart) holds the GPU."""
@@ -95,7 +123,8 @@ class EngineClient:
             return
         try:
             p = psutil.Process(pid)
-            if "python" in p.name().lower() and any("sdxlr" in str(c) for c in p.cmdline()):
+            cmd = " ".join(str(c) for c in p.cmdline())  # a spawn child's command line has no "sdxlr"
+            if "python" in p.name().lower() and ("sdxlr" in cmd or "spawn_main" in cmd):
                 p.kill()
                 p.wait(5)
                 log.info(f"killed a stale engine worker (pid {pid}) left by an earlier app run")
@@ -104,6 +133,7 @@ class EngineClient:
         f.unlink(missing_ok=True)
 
     def _ensure(self) -> None:
+        """Start a worker if there is none (caller holds _lock)."""
         if self.alive:
             return
         if not self._stale_checked:
@@ -111,40 +141,107 @@ class EngineClient:
             self._stale_checked = True
         parent, child = self._ctx.Pipe()
         self._reset()
-        self._killed = False
+        self._gen += 1
         self.cancel_event = self._ctx.Event()
-        self.proc = self._ctx.Process(target=_child_entry, args=(child, self.cancel_event, os.getpid()), daemon=True)
-        self.proc.start()
+        proc = self._ctx.Process(target=_child_entry, args=(child, self.cancel_event, os.getpid()), daemon=True)
+        proc.start()
         child.close()
-        self.conn = parent
-        log.info(f"engine worker started (pid {self.proc.pid})")
+        self.proc, self.conn = proc, parent
+        threading.Thread(target=self._read, args=(self._gen, proc, parent), daemon=True).start()
+        log.info(f"engine worker started (pid {proc.pid})")
 
-    def kill(self) -> None:
-        """Stop the worker now — frees all its VRAM; the next call restarts it."""
-        p, self.proc = self.proc, None
-        conn, self.conn = self.conn, None
-        self._killed = True
+    def _read(self, gen: int, proc, conn) -> None:
+        """Drain the pipe for as long as this worker lives."""
+        while self._gen == gen:
+            try:
+                if conn.poll(0.5):
+                    ev = conn.recv()
+                elif proc.is_alive() or conn.poll(0):
+                    continue
+                else:
+                    break
+            except (EOFError, OSError):
+                break
+            if not isinstance(ev, dict):
+                continue
+            t, rid = ev.get("type"), ev.get("id")
+            with self._lock:
+                if self._gen != gen:
+                    return
+                if t == "beat":
+                    self._apply_beat(ev)
+                    continue
+                if t in TERMINAL:
+                    self._pending.discard(rid)
+                if rid == self._cur and self._q is not None:
+                    self._q.put(ev)  # events of any other request are stale: dropped
+        with self._lock:
+            if self._gen == gen:
+                self._died_locked(proc)
+
+    def _died_locked(self, proc) -> None:
+        """The worker is gone without being asked to stop (caller holds _lock)."""
+        conn, self.conn, self.proc = self.conn, None, None
+        self._gen += 1
+        self._pending.clear()
         if conn is not None:
             try:
                 conn.close()
             except OSError:
                 pass
+        proc.join(2)
+        code = proc.exitcode
+        log.info(f"engine worker died (exit code {code}{', killed: likely out of memory' if code == -9 else ''}); "
+                 "last beat: " + json.dumps(self.beat)[:400])
         self._reset()
-        if p is not None:
-            if p.is_alive():
-                p.kill()
-            p.join(3)
-            log.info(f"engine worker killed (pid {p.pid})")
+        self._stopped(DEATH_MSG)
+
+    def _stopped(self, msg: str) -> None:
+        """Tell the running call (or, when idle, the next one) that the worker stopped."""
+        if self._cur is not None and self._q is not None:
+            self._q.put({"type": "_died", "msg": msg})
+        else:
+            self.died_idle, self.death_msg = True, msg
+        if self.on_death is not None:
+            threading.Thread(target=self.on_death, daemon=True).start()
+
+    def kill(self, reason: str | None = None) -> None:
+        """Stop the worker now — frees all its VRAM; the next call restarts it.
+        reason=None is a user cancel (the running call raises Cancelled); a reason
+        (the RAM guard) makes the running call raise WorkerDied naming it."""
+        with self._lock:
+            proc, conn, self.proc, self.conn = self.proc, self.conn, None, None
+            if proc is None:
+                return
+            self._gen += 1
+            self._pending.clear()
+            self._reset()
+            if reason is None:
+                if self._cur is not None and self._q is not None:
+                    self._q.put({"type": "_killed"})
+            else:
+                self._stopped(LOW_RAM_MSG if reason == "low RAM" else
+                              f"The image engine was stopped ({reason}). Your images are safe; "
+                              "press Generate to start it again.")
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
+        if proc.is_alive():
+            proc.kill()
+        proc.join(3)
+        log.info(f"engine worker killed (pid {proc.pid}{', ' + reason if reason else ''})")
 
     def unload(self) -> None:
         """Drop the loaded model (only when idle; GPU jobs kill the worker instead)."""
-        if self._busy:
+        if self.busy:
             raise RuntimeError("the engine is busy")
         if self.alive:
             self.call("unload")
 
     def shutdown(self) -> None:
-        if self.alive and not self._busy:
+        if self.alive and not self.busy:
             try:
                 self.call("shutdown")
             except Exception:
@@ -152,68 +249,102 @@ class EngineClient:
         self.kill()
 
     # ---- ops ----
+    def _wait_abandoned(self, task) -> None:
+        """A cancelled op can still be winding down in the worker: wait for it
+        (the cancel watch kills the worker at its deadline)."""
+        deadline = time.time() + CANCEL_KILL_SECS + 5
+        while True:
+            with self._lock:
+                if not self._pending:
+                    return
+            if task is not None:
+                task.check()
+            if time.time() > deadline:
+                log.info("engine worker kept running a cancelled op; killing it")
+                self.kill()
+                return
+            time.sleep(0.1)
+
     def call(self, op: str, args: dict | None = None, task=None) -> dict:
         """Run one op in the worker and wait for its result. Stage and step
         events feed the task; cancelling the task stops the op."""
+        args = args or {}
         with self._call_lock:
-            self._ensure()
-            conn = self.conn
+            with self._lock:
+                if self.proc is not None and not self.proc.is_alive():  # died unseen: report it first
+                    self._died_locked(self.proc)
+                if self.died_idle:
+                    self.died_idle = False
+                    raise WorkerDied(self.death_msg)
+            self._wait_abandoned(task)
             rid = uuid.uuid4().hex[:8]
-            self._busy = True
+            with self._lock:
+                self._ensure()
+                q = self._q = queue.Queue()
+                self._cur = rid
+                self._pending.add(rid)
+                conn = self.conn
             if task is not None:
                 task.on_cancel = self._cancel_current
             try:
-                conn.send({"id": rid, "op": op, "args": args or {}})
+                try:
+                    conn.send({"id": rid, "op": op, "args": args})
+                except (OSError, ValueError):
+                    with self._lock:
+                        if self.conn is conn and self.proc is not None and not self.proc.is_alive():
+                            self._died_locked(self.proc)
+                    self.died_idle = False
+                    raise WorkerDied(self.death_msg) from None
                 while True:
-                    try:
-                        if not conn.poll(0.25):
-                            if not self.proc.is_alive():
-                                raise EOFError
-                            continue
-                        ev = conn.recv()
-                    except (EOFError, OSError):
-                        try:
-                            conn.close()
-                        except OSError:
-                            pass
-                        self.proc = None
-                        died = not self._killed
-                        self._reset()
-                        if died:
-                            log.info("engine worker died; last beat: " + json.dumps(self.beat)[:400])
-                            if self.on_death is not None:
-                                threading.Thread(target=self.on_death, daemon=True).start()
-                        raise (WorkerDied(DEATH_MSG) if died else Cancelled("cancelled")) from None
+                    ev = q.get()
                     t = ev.get("type")
-                    if t == "beat":
-                        self._apply_beat(ev)
-                    elif t == "stage" and task is not None:
+                    if t == "_died":
+                        self.died_idle = False
+                        raise WorkerDied(ev["msg"])
+                    if t == "_killed":
+                        raise Cancelled("cancelled")
+                    if t == "stage" and task is not None:
                         task.set_stage(ev["stage"])  # raises Cancelled if the task was cancelled
                     elif t == "step" and task is not None:
                         task.step(ev["done"], ev["total"])
-                    elif t == "result" and ev.get("id") == rid:
-                        return ev.get("result") or {}
+                    elif t == "result":
+                        res = ev.get("result") or {}
+                        if op == "load":
+                            self._apply_loaded(args, res)
+                        elif op == "unload":
+                            self._reset()
+                        return res
                     elif t == "cancelled":
                         raise Cancelled("cancelled")
                     elif t == "error":
                         log.info(f"engine op failed: {ev.get('error')}\n{ev.get('tb', '')[-1500:]}")
                         raise RuntimeError(ev.get("error") or "engine error")
             finally:
-                self._busy = False
+                with self._lock:
+                    if self._cur == rid:
+                        self._cur = self._q = None
                 if task is not None and task.on_cancel == self._cancel_current:
                     task.on_cancel = None
 
     def _cancel_current(self) -> None:
-        """Stop the running op: ask first, kill if it cannot stop in time."""
-        if not self._busy or self.cancel_event is None:
+        """Stop the running op: ask first, kill if it cannot stop in time. The
+        watch is armed for this request only; a later op is never killed by it."""
+        with self._lock:
+            rid, ev, gen = self._cur, self.cancel_event, self._gen
+        if rid is None or ev is None:
             return
-        self.cancel_event.set()
+        ev.set()
 
         def watch():
             deadline = time.time() + CANCEL_KILL_SECS
-            while self._busy and time.time() < deadline:
+            while time.time() < deadline:
+                with self._lock:
+                    if rid not in self._pending or self._gen != gen:
+                        return
                 time.sleep(0.1)
-            if self._busy and self.proc is not None and self.proc.is_alive():
+            with self._lock:
+                still = rid in self._pending and self._gen == gen
+            if still:
                 log.info("engine worker would not cancel in time (a load is not interruptible); killing it")
                 self.kill()
 
