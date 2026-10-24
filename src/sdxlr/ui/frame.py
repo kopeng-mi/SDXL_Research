@@ -212,6 +212,8 @@ def main() -> None:
     threading.Thread(target=core.sample_usage_loop, daemon=True).start()
     from ..service import files as _files
     _files.start_refresh()  # cached listings for every timer (first scan synchronous)
+    from ..service import masks
+    masks.register(app)  # POST /api/mask/<session>: the painter's mask
     for d in _files.SERVED:  # only what the pages show: not sessions, logs, datasets, models
         (core.WORK / d).mkdir(parents=True, exist_ok=True)
         app.add_media_files(f"/work/{d}", core.WORK / d)

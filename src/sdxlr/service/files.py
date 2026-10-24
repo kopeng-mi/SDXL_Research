@@ -27,6 +27,8 @@ PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAI
 _lock = threading.Lock()
 _wake = threading.Event()
 _poked = threading.Event()
+DISPLAY = 2048  # the painter and the before/after slider show this copy, never a 24 MP original
+_ready: set[tuple[str, int]] = set()  # thumbs known to exist (no disk check needed)
 _want: set[tuple[str, int]] = set()  # thumbs asked for before they existed: made by the refresh thread
 _sig: list = [None, 0.0]  # directory signature and time of the last full scan
 _started = threading.Event()
@@ -160,8 +162,11 @@ def thumb(p: Path, size: int = 320) -> str:
     """URL of a thumbnail. Never decodes an image here (this runs on the event loop): a missing
     thumb is queued for the refresh thread and the original shows until it is made."""
     t = _thumb_path(p, size)
+    if (str(p), size) in _ready:
+        return url(t)
     try:
         if t.stat().st_mtime >= Path(p).stat().st_mtime:
+            _ready.add((str(p), size))
             return url(t)
     except OSError:
         pass
@@ -169,6 +174,17 @@ def thumb(p: Path, size: int = 320) -> str:
         _want.add((str(p), size))
     _wake.set()
     return url(p) if Path(p).relative_to(WORK).parts[0] in SERVED else PLACEHOLDER
+
+
+def display_url(p) -> str | None:
+    """URL of the display copy of an image, or None while the refresh thread is still making it."""
+    key = (str(p), DISPLAY)
+    if key in _ready:
+        return url(_thumb_path(p, DISPLAY))
+    with _lock:
+        _want.add(key)
+    _wake.set()
+    return None
 
 
 def _make_thumb(p: Path, t: Path, size: int) -> None:
@@ -189,6 +205,7 @@ def _make_missing(pairs) -> None:
             t = _thumb_path(p, size)
             if not t.exists() or t.stat().st_mtime < Path(p).stat().st_mtime:
                 _make_thumb(Path(p), t, size)
+            _ready.add((str(p), size))
         except Exception:
             pass  # half-written or vanished file; the next pass retries
 
@@ -264,7 +281,7 @@ def _refresh(force: bool = False) -> None:
         pending = list(_want)
         _want.clear()
     # thumbs for every listed image, newest first, made here and not on the event loop
-    _make_missing(pending + [(p, size) for p, _ in his for size in (160, 320)]
+    _make_missing(pending + [(p, DISPLAY) for p, _ in his[:12]] + [(p, size) for p, _ in his for size in (160, 320)]
                   + [(p, 320) for imgs in ds.values() for p in imgs])
 
 

@@ -56,6 +56,15 @@ class State:
     whole_strength: float = 0.5
     up_strength: float = 0.3
     up_scale: float = 2.0
+    # editing: painted mask (id from the upload route), brush, feather, extend % per side (top, right, bottom, left)
+    mask_id: str | None = None
+    ptool: str = "brush"  # brush | eraser | box | move
+    brush: int = 48
+    feather: int = 12
+    extend: list = field(default_factory=lambda: [0, 0, 0, 0])
+    keep_size: bool = False
+    edit_count: int = 1
+    compare_on: bool = True  # show the before/after slider on an edit result
     # dataset
     ds_name: str = "my_photos"
     ds_link: str = ""

@@ -23,12 +23,15 @@ from ..activity import act, log
 from ..engine import client as engine_client
 from ..fetch import LORAS, fetch
 from ..paths import Z_ENCODERS, z_key
+from . import masks
 from .files import lora_path, model_path, z_path
 from .jobs import gpu_lock, jm
 
 engc = engine_client.make()  # the engine for the web process (fake when SDXLR_FAKE_ENGINE=1)
 
-TOOL_LABEL = {None: "Generate", "area": "Change the area", "whole": "Change the whole image", "upscale": "Upscale"}
+TOOL_LABEL = {None: "Generate", "area": "Change the painted part", "whole": "Change the whole image",
+              "extend": "Extend the image", "upscale": "Upscale"}
+EDIT_TOOLS = ("area", "whole", "extend")  # these make 1 to 4 variations
 
 
 # ---------- model ----------
@@ -67,7 +70,7 @@ def busy_task():
 
 def task_is_loading(t) -> bool:
     """True while a load (or the load step of a generation) is going on."""
-    return bool(t) and (t.kind == "load" or not t.stage.startswith(("Generating", "Changing", "Upscaling", "Done")))
+    return bool(t) and (t.kind == "load" or not t.stage.startswith(("Generating", "Changing", "Extending", "Upscaling", "Done")))
 
 
 def running_job():
@@ -161,8 +164,12 @@ def check_generate(S) -> None:
     check_model(S)
     if S["tool"] and not (S["src"] and Path(S["src"]).exists()):
         raise ValueError("Pick or upload an image first")
-    if S["tool"] == "area" and not S["boxes"]:
-        raise ValueError("Drag on the image to mark the area to change first")
+    if S["tool"] == "area":
+        p = masks.path_for(S["mask_id"])
+        if p is None or not p.exists():
+            raise ValueError("Paint the part to change first")
+    if S["tool"] == "extend" and not any(float(x or 0) > 0 for x in S["extend"]):
+        raise ValueError("Pick how much to add on at least one side")
 
 
 def generate_blocking(S, task) -> tuple[list[str], str, int]:
@@ -186,7 +193,9 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
             full, neg = f"{modes.PONY_TAGS}, {full}", f"{modes.PONY_NEG}, {neg}"
         w, h = modes.ASPECTS[S["aspect"]]
         tool = S["tool"]
-        strength = {"area": S["strength"], "whole": S["whole_strength"], "upscale": S["up_strength"]}.get(tool, 0.75)
+        strength = {"area": S["strength"], "whole": S["whole_strength"], "extend": 1.0,
+                    "upscale": S["up_strength"]}.get(tool, 0.75)
+        count = max(1, min(4, int(S["edit_count"]))) if tool in EDIT_TOOLS else 1 if tool else int(S["count"])
         if tool:
             image = Image.open(S["src"])  # size only; the worker opens it again for the work copy
             w, h = image.size
@@ -194,21 +203,27 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
             # image-to-image runs only steps x strength of the schedule: keep at least 4 real steps
             steps = max(int(steps), math.ceil(4 / max(strength, 0.05)))
         job = {"prompt": full, "negative": neg, "steps": int(steps), "cfg": float(cfg), "sampler": sampler,
-               "width": w, "height": h, "seed": int(S["seed"]), "count": 1 if tool else int(S["count"]),
+               "width": w, "height": h, "seed": int(S["seed"]), "count": count, "tool": tool, "blend": "plain",
+               "feather": int(S["feather"]), "keep_size": bool(S["keep_size"]),
+               "extend": [max(0.0, min(100.0, float(x or 0))) for x in S["extend"]] if tool == "extend" else None,
+               "mask": str(masks.path_for(S["mask_id"])) if tool == "area" else None,
                "clip_skip": int(S["clip_skip"]), "loras": loras, "strength": float(strength),
-               "image": S["src"] if tool else None, "boxes": S["boxes"] if tool == "area" else []}
+               "image": S["src"] if tool else None, "boxes": []}
         meta = {"prompt_raw": prompt, "prompt": full, "negative_raw": S["negative"], "negative": neg,
                 "style": S["style"], "mode": S["mode"], "steps": int(steps), "cfg": float(cfg), "sampler": sampler,
-                "clip_skip": int(S["clip_skip"]), "aspect": S["aspect"], "count": 1 if tool else int(S["count"]),
+                "clip_skip": int(S["clip_skip"]), "aspect": S["aspect"], "count": count,
                 "loras": [[n, float(x)] for n, x in S["loras"] if n and x],
                 "kind": S["kind"], "sdxl_model": S["sdxl_model"], "vae": S["vae"], "z_model": S["z_model"],
                 "z_te": S["z_te"], "z_quant": S["z_quant"], "tool": tool, "source": S["src"] if tool else None,
-                "strength": float(strength), "scale": S["up_scale"] if tool == "upscale" else None}
+                "strength": float(strength), "scale": S["up_scale"] if tool == "upscale" else None,
+                "feather": int(S["feather"]) if tool == "area" else None,
+                "extend": job["extend"], "keep_size": bool(S["keep_size"]) if tool == "whole" else None}
         if tool == "upscale":
             task.set_stage(f"Upscaling {S['up_scale']:g}x")
             r = engc.call("upscale", {"job": job, "scale": float(S["up_scale"]), "meta": meta}, task)
         else:
-            task.set_stage({"area": "Changing the area", "whole": "Changing the image"}.get(tool, "Generating"))
+            task.set_stage({"area": "Changing the painted part", "whole": "Changing the image",
+                            "extend": "Extending the image"}.get(tool, "Generating"))
             r = engc.call("generate", {"job": job, "meta": meta}, task)
     finally:
         gpu_lock.release()
