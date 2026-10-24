@@ -38,7 +38,7 @@ from nicegui import app, run, ui
 from PIL import Image, ImageDraw, PngImagePlugin
 
 from . import history, presets, resources, session, settings
-from .activity import LOGS, act, log, setup_logging
+from .activity import LOGS, Cancelled, act, log, setup_logging
 from .engine import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, Engine, Job
 from .fetch import LORAS, MODELS, WORK, ZIMAGE, add_file, fetch, fetch_loras, list_loras, list_models, list_zimage
 from .jobs import JobManager, fmt_secs
@@ -173,10 +173,34 @@ def loaded_label() -> str:
     return "No model loaded"
 
 
+def _prefetch(task, *args) -> None:
+    """Download what a load needs in a child process, so Cancel can stop it."""
+    import os
+    import subprocess
+    import sys
+    task.set_stage("Checking files")
+    task.proc = subprocess.Popen([sys.executable, "-u", "-m", "sdxlr.fetch", *args], stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+    tail = []
+    for line in task.proc.stdout:
+        tail = (tail + [line.rstrip()])[-5:]
+        if line.startswith(("model file", "text encoder", "configs")):
+            task.stage = {"m": "Got the model file", "t": "Got the text encoder", "c": "Got VAE and configs"}[line[0]]
+    rc = task.proc.wait()
+    task.proc = None
+    task.check()
+    if rc:
+        raise RuntimeError("download failed: " + " | ".join(tail))
+
+
 def _load(S, task) -> None:
     """Load the model picked in S (caller holds gpu_lock)."""
     if eng.pipe is not None and eng.model_path == wanted(S) and (S["kind"] == "Z-Image" or eng.vae_mode == S["vae"]):
         return
+    if S["kind"] == "Z-Image":
+        _prefetch(task, "prefetch-zimage", _z_path(S["z_model"]), Z_ENCODERS.get(S["z_te"], S["z_te"]))
+    elif S["vae"] == "fp16fix":
+        _prefetch(task, "prefetch-sdxl")
     if S["kind"] == "Z-Image":
         eng.load_zimage(_z_path(S["z_model"]), Z_ENCODERS.get(S["z_te"], S["z_te"]), S["z_quant"],
                         status=task.set_stage)
@@ -498,7 +522,7 @@ def page_generate(S, sheet):
                         .props("flat dense no-caps").classes("muted")
 
             draw_loras()
-            gen_b = ui.button("Generate", on_click=lambda: do_generate(S)).classes("w-full gen-btn").props("unelevated no-caps color=grey-3 text-color=grey-10")
+            gen_b = ui.button("Generate", on_click=lambda: cancel_or_generate(S)).classes("w-full gen-btn").props("unelevated no-caps color=grey-3 text-color=grey-10")
             info = ui.label().bind_text_from(S, "info").classes("t-small muted tnum")
 
         with ui.column().classes("gap-3").style("flex:1 1 0; min-width:0"):
@@ -559,7 +583,7 @@ def page_generate(S, sheet):
             step = f" {t.done}/{t.total}" if t.total else ""
             set_if(status, "text", f"{t.stage}{step}" + (f". {t.detail}" if t.detail else ""))
             set_if(prog, "content", f'<div class="progress"><span style="width:{pct:.0f}%"></span></div>')
-            set_if(gen_b, "text", f"{t.stage}{step}")
+            set_if(gen_b, "text", f"Cancel ({t.stage.lower()}{step})")
             if "busy" not in gen_b.classes:
                 gen_b.classes(add="busy")
         else:
@@ -655,6 +679,9 @@ async def do_load(S):
         label = await run.io_bound(load_blocking, copy.deepcopy(S), task)
         task.finish()
         ui.notify(f"{label} is ready")
+    except Cancelled:
+        task.fail("")
+        ui.notify("Load cancelled")
     except Exception as e:
         task.fail(err(e))
         ui.notify(err(e), type="negative", multi_line=True)
@@ -665,6 +692,19 @@ def do_unload():
         eng.unload()
     log.info("[load] model unloaded")
     ui.notify("Model unloaded")
+
+
+def busy_task():
+    return next((t for t in act.running() if t.kind in ("load", "generate")), None)
+
+
+async def cancel_or_generate(S):
+    t = busy_task()
+    if t:
+        t.cancel()
+        ui.notify("Cancelling. A download stops now; loading stops after the current step")
+        return
+    await do_generate(S)
 
 
 async def do_generate(S):
@@ -679,6 +719,9 @@ async def do_generate(S):
         paths, info = await run.io_bound(generate_blocking, copy.deepcopy(S), task)
         task.finish(info)
         S["image"], S["info"], S["edit"] = paths[0], info, False
+    except Cancelled:
+        task.fail("")
+        ui.notify("Cancelled")
     except Exception as e:
         task.fail(err(e))
         ui.notify(err(e), type="negative", multi_line=True)
@@ -1183,6 +1226,18 @@ def root():
                 task_l = ui.label("Nothing running").classes("t-small muted")
                 task_d = ui.label().classes("t-small muted tnum")
                 task_p = ui.html("", sanitize=False).classes("w-full")
+
+                def cancel_current():
+                    t = busy_task()
+                    if t:
+                        t.cancel()
+                    else:
+                        j = next((j for j in jm.recent(20) if j.status == "running"), None)
+                        if j:
+                            jm.cancel(j.id)
+                    ui.notify("Cancelling")
+
+                cancel_b = ui.button("Cancel", on_click=cancel_current).props("flat dense no-caps").classes("t-small")
             with ui.column().classes("w-full gap-1 section"):
                 ui.label(f"Session {code}").classes("t-small tnum").tooltip(
                     "Open the link again, or type this code in another browser, to continue where you left off")
@@ -1255,6 +1310,7 @@ def root():
             task_l.text, task_d.text, pct = "Nothing running", "", 0
         if queued:
             task_d.text += f" ({queued} queued)"
+        cancel_b.set_visibility(bool(busy or job))
         set_if(task_p, "content", f'<div class="progress"><span style="width:{pct:.0f}%"></span></div>' if (busy or job) else "")
 
     side_tick()

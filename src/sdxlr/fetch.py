@@ -3,6 +3,11 @@
   python -m sdxlr.fetch model SRC          SDXL checkpoint
   python -m sdxlr.fetch zimage SRC         Z-Image transformer (.gguf or .safetensors)
   python -m sdxlr.fetch loras SRC [SRC..]  .safetensors or .zip (flattened)
+  python -m sdxlr.fetch prefetch-zimage TRANSFORMER TEXT_ENCODER   every file a Z-Image load needs
+  python -m sdxlr.fetch prefetch-sdxl                              the fp16-fix VAE
+
+The app runs prefetch as a child process before loading a model, so a download
+can be cancelled (the process is killed; partial files resume next time).
 
 SRC = org/repo/file, a huggingface.co blob/resolve link, a Civitai link, any
 https URL, or a local path (upload, Drive). Private HF repos use HF_TOKEN.
@@ -83,6 +88,27 @@ def fetch_loras(src: str) -> list[Path]:
     return out
 
 
+def prefetch_zimage(transformer: str, text_encoder: str) -> None:
+    from huggingface_hub import snapshot_download
+
+    from .engine import Z_REPO
+    print(f"model file: {fetch(transformer, MODELS / 'zimage')}", flush=True)
+    repo, _, sub = text_encoder.partition(":")
+    snapshot_download(repo, allow_patterns=[f"{sub}/*"] if sub else None)
+    print(f"text encoder: {text_encoder}", flush=True)
+    # tokenizer, VAE, scheduler and configs; the transformer comes from the file above
+    snapshot_download(Z_REPO, ignore_patterns=["transformer/*.safetensors", "text_encoder/*.safetensors"])
+    print("configs + VAE ready", flush=True)
+
+
+def prefetch_sdxl() -> None:
+    from huggingface_hub import snapshot_download
+
+    from .engine import FP16_VAE
+    snapshot_download(FP16_VAE)
+    print("fp16 VAE ready", flush=True)
+
+
 def list_models() -> list[Path]:
     """SDXL checkpoints only (Z-Image parts live in models/zimage*/)."""
     return sorted(p for p in MODELS.rglob("*.safetensors")
@@ -101,6 +127,12 @@ def list_loras() -> list[Path]:
 
 if __name__ == "__main__":
     kind, *srcs = sys.argv[1:]
+    if kind == "prefetch-zimage":
+        prefetch_zimage(*srcs)
+        sys.exit()
+    if kind == "prefetch-sdxl":
+        prefetch_sdxl()
+        sys.exit()
     for s in srcs:
         if kind in ("model", "zimage"):
             p = fetch(s, MODELS if kind == "model" else ZIMAGE)

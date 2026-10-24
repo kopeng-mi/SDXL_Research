@@ -43,6 +43,10 @@ def gb(n: float) -> str:
     return f"{n / 2**30:.1f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
 
 
+class Cancelled(Exception):
+    pass
+
+
 @dataclass
 class Task:
     kind: str  # load | generate
@@ -57,12 +61,26 @@ class Task:
     started: float = field(default_factory=time.time)
     ended: float | None = None
     _logged: float = 0.0
+    cancelled: bool = False
+    proc: object = None  # a child process doing part of the work (download); killed on cancel
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        log.info(f"[{self.kind}] {self.title}: cancel requested")
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+
+    def check(self) -> None:
+        if self.cancelled:
+            raise Cancelled("cancelled")
 
     def set_stage(self, stage: str) -> None:
+        self.check()
         self.stage, self.done, self.total, self.detail = stage, 0, 0, ""
         log.info(f"[{self.kind}] {self.title}: {stage}")
 
     def step(self, done: int, total: int) -> None:
+        self.check()  # raising inside the diffusers step callback stops the generation
         self.done, self.total = done, total
         if time.time() - self._logged > LOG_EVERY or done == total:
             self._logged = time.time()
@@ -74,6 +92,10 @@ class Task:
         log.info(f"[{self.kind}] {self.title}: done in {self.ended - self.started:.0f}s {note}".rstrip())
 
     def fail(self, err: str) -> None:
+        if self.cancelled:
+            self.status, self.ended, self.error = "cancelled", time.time(), ""
+            log.info(f"[{self.kind}] {self.title}: cancelled")
+            return
         self.status, self.ended, self.error = "failed", time.time(), err
         log.info(f"[{self.kind}] {self.title}: failed: {err}")
 
