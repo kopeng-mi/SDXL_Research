@@ -1,10 +1,14 @@
-"""A fake engine for local UI tests (SDXLR_FAKE_ENGINE=1): no torch, no GPU.
+"""A stub Engine for local UI tests (SDXLR_FAKE_ENGINE=1): no torch, no GPU, no downloads.
 
-Same surface as engine.client.EngineClient. Loads take about a second,
-generation draws a labelled placeholder at the requested size, everything can
-be cancelled, and results are saved exactly like the real worker saves them.
-SDXLR_FAKE_CRASH=1 kills the "worker" on the first generate, to test the
-death message and the restart on the next Generate.
+Same surface worker.py uses from models.Engine, and it runs inside the real
+worker process, so a fake UI run exercises the real pipe protocol: reader
+thread, heartbeats, cancel, the cancel kill, the death message. Generation
+draws a labelled placeholder at the requested size.
+
+Test switches (environment):
+  SDXLR_FAKE_CRASH=1     the first generate (once per work dir) kills the worker with exit code 9
+  SDXLR_FAKE_SLOWLOAD=1  the first load (once per work dir) sleeps 20 s without noticing cancel
+  SDXLR_FAKE_FAST=1      no sleeps at all (unit tests); SDXLR_FAKE_SCALE=0.1 makes every sleep that much shorter
 """
 
 from __future__ import annotations
@@ -12,183 +16,136 @@ from __future__ import annotations
 import os
 import random
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from PIL import Image, ImageDraw
 
-from .client import DEATH_MSG, WorkerDied
-from .worker import _edit_images, open_source, save_edit_masks, save_images, work_copy
-
-FAKE_BEAT = {"type": "beat", "parts": [], "alloc": 0.3, "reserved": 0.5, "rss": 0.4}
+from ..paths import RUN, z_key
 
 
-class FakeEngineClient:
-    needs_prefetch = False  # never download real model files from a fake run
+@dataclass
+class Job:
+    prompt: str
+    negative: str = ""
+    steps: int = 25
+    cfg: float = 5.0
+    width: int = 896
+    height: int = 1152
+    seed: int = -1
+    count: int = 1
+    sampler: str = "dpmpp_2m_karras"
+    clip_skip: int = 2
+    loras: list[tuple[str, float]] = field(default_factory=list)
+    image: Image.Image | None = None
+    mask: Image.Image | None = None
+    strength: float = 0.75
+    on_step: Callable[[int, int], None] | None = None
 
+
+def _once(name: str) -> bool:
+    """True the first time in this work dir (a restarted worker must not repeat a test switch)."""
+    f = RUN / f"fake_{name}.done"
+    if f.exists():
+        return False
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.touch()
+    return True
+
+
+def _sleep(secs: float) -> None:
+    scale = 0.0 if os.environ.get("SDXLR_FAKE_FAST") else float(os.environ.get("SDXLR_FAKE_SCALE", "1"))
+    if scale > 0:
+        time.sleep(secs * scale)
+
+
+def _img(w: int, h: int, text: str) -> Image.Image:
+    im = Image.new("RGB", (w, h))
+    d = ImageDraw.Draw(im)
+    rnd = random.Random(w * h)
+    for _ in range(max(w, h) // 4):
+        x, y = rnd.randrange(w), rnd.randrange(h)
+        r = rnd.randrange(2, 14)
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)))
+    for i, line in enumerate(text.split("|")):
+        d.text((12, 12 + i * 16), line[:90], fill=(255, 255, 255))
+    return im
+
+
+class _Pipe:
+    """Stands in for a diffusers pipeline: no unet/transformer/... attributes, so model_parts gives []."""
+
+
+class Engine:
     def __init__(self) -> None:
-        self.kind = None
-        self.model_path = None
-        self.vae_mode = None
-        self.adapters = {}
-        self.beat = dict(FAKE_BEAT)
-        self._busy = False
-        self._dead = False
-        self._crashed_once = False
+        self.pipe = None
+        self.kind: str | None = None
+        self.model_path: str | None = None
+        self.vae_mode: str | None = None
+        self.adapters: dict[str, str] = {}
 
-    @property
-    def alive(self) -> bool:
-        return not self._dead
-
-    @property
-    def loaded(self) -> bool:
-        return self.model_path is not None
-
-    def _reset(self) -> None:
-        self.kind = self.model_path = self.vae_mode = None
-        self.adapters = {}
-        self.beat = dict(FAKE_BEAT)
-
-    # ---- process stand-ins ----
-    def kill(self) -> None:
-        self._dead = True
-        self._reset()
+    # ---- sidebar numbers the beat reports instead of real VRAM parts ----
+    def beat_extra(self) -> dict:
+        if self.kind == "zimage":
+            return {"parts": [("DiT", 7.2), ("text encoder", 2.5), ("VAE", 0.2)], "alloc": 9.9, "reserved": 11.0, "rss": 1.6}
+        if self.kind == "sdxl":
+            return {"parts": [("UNet", 5.1), ("text encoder", 0.6), ("text encoder 2", 1.2), ("VAE", 0.4)],
+                    "alloc": 7.3, "reserved": 8.5, "rss": 1.4}
+        return {"parts": [], "alloc": 0.3, "reserved": 0.5, "rss": 0.4}
 
     def unload(self) -> None:
-        if self._busy:
-            raise RuntimeError("the engine is busy")
-        self._reset()
+        self.pipe = None
+        self.kind = self.model_path = self.vae_mode = None
+        self.adapters = {}
 
-    def shutdown(self) -> None:
-        self.kill()
-
-    def _cancel_current(self) -> None:  # ops notice task.cancelled in their loops
-        pass
-
-    # ---- ops ----
-    def call(self, op: str, args: dict | None = None, task=None) -> dict:
-        args = args or {}
-        if self._dead:  # a killed worker restarts on the next request
-            self._dead = False
-            self._reset()
-        self._busy = True
-        try:
-            return {"load": self._load, "unload": self._unload, "status": self._status,
-                    "generate": self._generate, "upscale": self._upscale}[op](args, task)
-        finally:
-            self._busy = False
-
-    def _sleep(self, secs: float, task) -> None:
-        end = time.time() + secs
-        while time.time() < end:
-            if task is not None:
-                task.check()
-            time.sleep(0.05)
-
-    def _load(self, args, task):
+    def _load(self, kind: str, model_path: str, vae: str | None, status, label: str) -> str:
         t = time.time()
         for stage, secs in (("Getting the model files", 0.4), ("Loading the model", 0.7), ("Moving to GPU", 0.3)):
-            if task is not None:
-                task.set_stage(stage)
-            self._sleep(secs, task)
-        if args.get("kind") == "zimage":
-            self.kind, self.model_path = "zimage", "|".join(["zimage", args["transformer"],
-                                                             args["text_encoder"], args["te_quant"]])
-            self.beat = {**FAKE_BEAT, "kind": self.kind, "model_path": self.model_path,
-                         "parts": [("DiT", 7.2), ("text encoder", 2.5), ("VAE", 0.2)],
-                         "alloc": 9.9, "reserved": 11.0, "rss": 1.6}
-            label = "loaded Z-Image (fake)"
-        else:
-            self.kind, self.model_path, self.vae_mode = "sdxl", args["path"], args.get("vae", "fp16fix")
-            self.beat = {**FAKE_BEAT, "kind": self.kind, "model_path": self.model_path,
-                         "parts": [("UNet", 5.1), ("text encoder", 0.6), ("text encoder 2", 1.2), ("VAE", 0.4)],
-                         "alloc": 7.3, "reserved": 8.5, "rss": 1.4}
-            label = "loaded SDXL (fake)"
-        return {"label": f"{label} in {time.time() - t:.0f}s | fake"}
+            status(stage)
+            if stage == "Loading the model" and os.environ.get("SDXLR_FAKE_SLOWLOAD") and _once("slowload"):
+                time.sleep(20)  # a load that cannot be interrupted: only the client's kill stops it
+            _sleep(secs)
+        self.pipe, self.kind, self.model_path, self.vae_mode = _Pipe(), kind, model_path, vae
+        return f"{label} in {time.time() - t:.0f}s | fake"
 
-    def _unload(self, args, task):
-        self._reset()
-        return {}
+    def load(self, path: str, vae: str = "fp16fix", status: Callable[[str], None] = lambda s: None) -> str:
+        return self._load("sdxl", path, vae, status, "loaded SDXL (fake)")
 
-    def _status(self, args, task):
-        return {"kind": self.kind, "model_path": self.model_path, "vae_mode": self.vae_mode}
+    def load_zimage(self, transformer: str, text_encoder: str, te_quant: str,
+                    status: Callable[[str], None] = lambda s: None) -> str:
+        return self._load("zimage", z_key(transformer, text_encoder, te_quant), None, status, "loaded Z-Image (fake)")
 
-    def _img(self, w: int, h: int, text: str) -> Image.Image:
-        im = Image.new("RGB", (w, h))
-        d = ImageDraw.Draw(im)
-        rnd = random.Random(w * h)
-        for _ in range(max(w, h) // 4):
-            x, y = rnd.randrange(w), rnd.randrange(h)
-            r = rnd.randrange(2, 14)
-            d.ellipse([x - r, y - r, x + r, y + r], fill=(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)))
-        for i, line in enumerate(text.split("|")):
-            d.text((12, 12 + i * 16), line[:90], fill=(255, 255, 255))
-        return im
-
-    def _generate(self, args, task):
-        if os.environ.get("SDXLR_FAKE_CRASH") and not self._crashed_once:
-            self._crashed_once = True
-            self._dead = True
-            self._reset()
-            raise WorkerDied(DEATH_MSG)
-        t0 = time.time()
-        j = args["job"]
-        tool = j.get("tool")
-        if tool in ("area", "extend"):  # same crop-and-stitch path as the worker, pattern instead of a model
-            check = task.check if task is not None else (lambda: None)
-            step = task.step if task is not None else (lambda d, t: None)
-            images, masks, seed, note = _edit_images(self, args, step, check,
-                                                     pattern=lambda size, s: self._img(size[0], size[1], "edit fake"))
-            meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
-            paths = save_images(images, meta, seed)
-            save_edit_masks(paths, masks)
-            return {"paths": paths, "seed": seed, "info": f"{meta['seconds']}s | {note} (fake) | seed {seed}",
-                    "size": list(images[0].size)}
-        if tool == "whole":
-            from . import edit
-            original = edit.load_source(j["image"])
-            base, _, _ = work_copy(original, 8)
-            steps = max(1, int(j.get("steps", 20)))
-            for i in range(1, steps + 1):
-                if task is not None:
-                    task.step(i, steps)
-                self._sleep(12 / steps, task)
-            seed = int(j.get("seed", -1)) if int(j.get("seed", -1)) >= 0 else random.randrange(2**31 - 1)
-            count = max(1, min(4, int(j.get("count", 1))))
-            images = [self._img(base.width, base.height, f"{j['prompt'][:40]} | whole fake") for _ in range(count)]
-            if j.get("keep_size"):
-                images = [im.resize(original.size, Image.LANCZOS) for im in images]
-            meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
-            paths = save_images(images, meta, seed)
-            return {"paths": paths, "seed": seed, "info": f"{meta['seconds']}s | fake | seed {seed}",
-                    "size": list(images[0].size)}
-        steps = max(1, int(j.get("steps", 20)))
-        if task is not None:
-            task.set_stage("Generating")
+    def _steps(self, steps: int, on_step, secs: float = 12.0) -> None:
         for i in range(1, steps + 1):
-            task.step(i, steps)
-            self._sleep(12 / steps, task)
-        seed = int(j.get("seed", -1)) if int(j.get("seed", -1)) >= 0 else random.randrange(2**31 - 1)
-        if j.get("image"):
-            img, _ = open_source(j["image"], j.get("boxes") or [], 8)
-            w, h = img.size
-        else:
-            w, h = int(j["width"]), int(j["height"])
-        count = int(j.get("count", 1))
-        meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
-        paths = save_images([self._img(w, h, f"{j['prompt'][:60]} | fake") for _ in range(count)], meta, seed)
-        return {"paths": paths, "seed": seed, "info": f"{meta['seconds']}s | fake | seed {seed}", "size": [w, h]}
+            if on_step:
+                on_step(i, steps)
+            _sleep(secs / steps)
 
-    def _upscale(self, args, task):
+    def generate(self, job: Job) -> tuple[list[Image.Image], int, str]:
+        if self.pipe is None:
+            raise RuntimeError("no model loaded")
+        if os.environ.get("SDXLR_FAKE_CRASH") and _once("crash"):
+            os._exit(9)  # like the kernel's OOM kill: no goodbye on the pipe
         t0 = time.time()
-        j = args["job"]
-        img, _ = open_source(j["image"], [], 8)
-        scale = float(args.get("scale", 2.0))
-        w, h = int(img.width * scale), int(img.height * scale)
-        tiles = max(1, (w // 1024 + 1) * (h // 1024 + 1))
-        for i in range(1, tiles + 1):
-            task.step(i, tiles)
-            self._sleep(8 / tiles, task)
-        seed = int(j.get("seed", -1)) if int(j.get("seed", -1)) >= 0 else random.randrange(2**31 - 1)
-        big = self._img(w, h, f"upscale {scale:g}x | fake").resize((w, h))
-        meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
-        paths = save_images([big], meta, seed)
-        return {"paths": paths, "seed": seed, "info": f"{meta['seconds']}s | {w}x{h} fake | seed {seed}", "size": [w, h]}
+        self._steps(max(1, int(job.steps)), job.on_step)
+        seed = job.seed if job.seed >= 0 else random.randrange(2**31 - 1)
+        w, h = job.image.size if job.image is not None else (job.width, job.height)
+        images = [_img(w, h, f"{job.prompt[:60]} | fake") for _ in range(max(1, job.count))]
+        return images, seed, f"{time.time() - t0:.1f}s | fake | seed {seed}"
+
+    def inpaint_crop(self, job: Job, crop: Image.Image, mask: Image.Image) -> Image.Image:
+        if self.pipe is None:
+            raise RuntimeError("no model loaded")
+        self._steps(max(1, int(job.steps)), job.on_step, secs=4.0)
+        return _img(crop.width, crop.height, "edit fake")
+
+    def upscale(self, job: Job, scale: float = 2.0, tile: int = 1024, overlap: int = 128,
+                on_tile=None) -> tuple[Image.Image, int, str]:
+        if self.pipe is None:
+            raise RuntimeError("no model loaded")
+        t0 = time.time()
+        w, h = int(job.image.width * scale), int(job.image.height * scale)
+        tiles = max(1, (w // tile + 1) * (h // tile + 1))
+        self._steps(tiles, on_tile, secs=8.0)
+        seed = job.seed if job.seed >= 0 else random.randrange(2**31 - 1)
+        return _img(w, h, f"upscale {scale:g}x | fake"), seed, f"{time.time() - t0:.1f}s | {w}x{h} fake | seed {seed}"

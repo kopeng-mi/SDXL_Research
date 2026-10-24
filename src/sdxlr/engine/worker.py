@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 
@@ -25,6 +26,8 @@ from PIL import Image
 from ..paths import OUTPUTS, RUN
 
 GB = 2**30
+BEAT_SECS = float(os.environ.get("SDXLR_BEAT_SECS", "2"))  # tests shorten it
+_models = None  # the engine module: models (torch), or fake (stub) when SDXLR_FAKE_ENGINE is set; picked in main()
 
 
 class Cancelled(Exception):
@@ -138,7 +141,7 @@ def _op_load(eng, args, status, step, check):
 
 
 def _job_from(eng, j: dict, step) -> "object":
-    from . import models
+    models = _models
     image = mask = None
     if j.get("image"):
         image, mask = open_source(j["image"], j.get("boxes") or [], 16 if eng.kind == "zimage" else 8)
@@ -153,7 +156,7 @@ def _job_from(eng, j: dict, step) -> "object":
 
 def _plain_job(j: dict, seed: int, step, image=None, count: int = 1) -> "object":
     """A Job built by hand: the pipelines get called by the caller (inpaint_crop / generate)."""
-    from . import models
+    models = _models
     w, h = image.size if image is not None else (int(j["width"]), int(j["height"]))
     return models.Job(prompt=j["prompt"], negative=j.get("negative", ""), steps=int(j["steps"]),
                       cfg=float(j["cfg"]), width=w, height=h, seed=seed, count=count,
@@ -171,9 +174,8 @@ def save_edit_masks(paths: list[str], masks: list) -> None:
             pass
 
 
-def _edit_images(eng, args, step, check, pattern=None):
-    """Crop-and-stitch edits: area (painted mask or boxes) and extend (outpaint).
-    pattern(size, seed) makes the placeholder crop when there is no engine (fake)."""
+def _edit_images(eng, args, step, check):
+    """Crop-and-stitch edits: area (painted mask or boxes) and extend (outpaint)."""
     import random
 
     from . import edit
@@ -199,11 +201,8 @@ def _edit_images(eng, args, step, check, pattern=None):
         for rm in regions:
             plan = edit.prepare(img, rm, multiple, feather_px=feather)
             check()
-            if pattern is None:
-                job = _plain_job(j, seed + c, step)
-                out = eng.inpaint_crop(job, plan.crop, plan.crop_mask)
-            else:
-                out = pattern(plan.crop.size, seed + c)
+            job = _plain_job(j, seed + c, step)
+            out = eng.inpaint_crop(job, plan.crop, plan.crop_mask)
             img = edit.paste_back(img, out, plan)
             check()
         outs.append(img)
@@ -263,17 +262,37 @@ OPS = {"status": _op_status, "unload": _op_unload, "load": _op_load,
 
 
 def main(conn, cancel_event, parent_pid: int) -> None:
+    global _models
     oom_score(1000)  # the web app survives RAM trouble; this process is rebuilt for free
     RUN.mkdir(parents=True, exist_ok=True)
     pid_f = RUN / "worker.pid"
-    pid_f.write_text(str(os.getpid()))
-    from . import models
+    ctime = 0.0
+    try:
+        import psutil
+        ctime = psutil.Process().create_time()
+    except Exception:
+        pass
+    pid_f.write_text(f"{os.getpid()} {ctime:.2f}")  # the create time tells a stale worker from a reused pid
+    if os.environ.get("SDXLR_FAKE_ENGINE"):
+        from . import fake as models
+    else:
+        from . import models
+    _models = models
     eng = models.Engine()
     send_lock = threading.Lock()
     cur = {"id": None}
 
-    def send(msg: dict) -> None:
+    def state() -> dict:
+        return {"kind": eng.kind, "model_path": eng.model_path, "vae_mode": eng.vae_mode,
+                "adapters": dict(eng.adapters)}
+
+    def send(msg: dict, stamp: str | None = None) -> None:
         with send_lock:  # the beat thread and the op handler share the pipe
+            # the state is read here, under the lock: a beat can never carry a state older than a result sent before it
+            if stamp == "beat":
+                msg.update(state())
+            elif stamp == "result":
+                msg["result"] = {**msg["result"], "state": state()}
             try:
                 conn.send(msg)
             except OSError:
@@ -301,19 +320,29 @@ def main(conn, cancel_event, parent_pid: int) -> None:
             pass
         if eng.pipe is not None:
             parts = model_parts(eng.pipe, eng.adapters)
-        try:
-            import torch
-            if torch.cuda.is_available():
-                alloc, reserved = torch.cuda.memory_allocated() / GB, torch.cuda.memory_reserved() / GB
-        except Exception:
-            pass
-        send({"type": "beat", "kind": eng.kind, "model_path": eng.model_path, "vae_mode": eng.vae_mode,
-              "adapters": dict(eng.adapters), "parts": parts, "alloc": alloc, "reserved": reserved, "rss": rss})
+        if "torch" in sys.modules:  # never import it here: a stub engine must stay torch-free
+            try:
+                torch = sys.modules["torch"]
+                if torch.cuda.is_available():
+                    alloc, reserved = torch.cuda.memory_allocated() / GB, torch.cuda.memory_reserved() / GB
+            except Exception:
+                pass
+        msg = {"type": "beat", "parts": parts, "alloc": alloc, "reserved": reserved, "rss": rss}
+        if hasattr(eng, "beat_extra"):
+            msg.update(eng.beat_extra())
+        send(msg, stamp="beat")
 
     def beat_loop():
+        last = None
         while True:
-            time.sleep(2)
-            beat()
+            time.sleep(BEAT_SECS)
+            try:
+                beat()
+            except Exception as e:  # keep beating; say each distinct problem once
+                err = f"{type(e).__name__}: {e}"
+                if err != last:
+                    last = err
+                    print(f"engine worker: heartbeat failed: {err}", file=sys.stderr, flush=True)
 
     def orphan_loop():
         while True:  # the web app is gone: holding the GPU helps nobody
@@ -336,10 +365,10 @@ def main(conn, cancel_event, parent_pid: int) -> None:
             try:
                 check()
                 if req.get("op") == "shutdown":
-                    send({"type": "result", "id": cur["id"], "result": {}})
+                    send({"type": "result", "id": cur["id"], "result": {}}, stamp="result")
                     break
                 res = OPS[req.get("op")](eng, req.get("args") or {}, status, step, check)
-                send({"type": "result", "id": cur["id"], "result": res})
+                send({"type": "result", "id": cur["id"], "result": res}, stamp="result")
             except Cancelled:
                 send({"type": "cancelled", "id": cur["id"]})
             except Exception as e:

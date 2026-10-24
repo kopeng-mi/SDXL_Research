@@ -51,9 +51,8 @@ def _child_entry(conn, cancel_event, parent_pid: int) -> None:
 class EngineClient:
     """Owns the worker process; mirrors its loaded state from heartbeats."""
 
-    needs_prefetch = True  # downloads run before a load; the fake engine has nothing to fetch
-
     def __init__(self) -> None:
+        self.needs_prefetch = not os.environ.get("SDXLR_FAKE_ENGINE")  # downloads run before a load; the stub engine has nothing to fetch
         self._ctx = multiprocessing.get_context("spawn")
         self.proc = None
         self.conn = None
@@ -102,9 +101,7 @@ class EngineClient:
 
     def _apply_loaded(self, args: dict, result: dict) -> None:
         """State right after a load, before the next heartbeat says so."""
-        if result.get("state"):
-            self._apply_beat({**self.beat, **result["state"]})
-        elif args.get("kind") == "zimage":
+        if args.get("kind") == "zimage":
             from ..paths import z_key
             self.kind, self.vae_mode = "zimage", None
             self.model_path = z_key(args["transformer"], args["text_encoder"], args["te_quant"])
@@ -117,14 +114,14 @@ class EngineClient:
         from ..paths import RUN
         f = RUN / "worker.pid"
         try:
-            pid = int(f.read_text().strip())
+            pid_s, ctime_s = f.read_text().split()  # "<pid> <create time>"
+            pid, ctime = int(pid_s), float(ctime_s)
         except (OSError, ValueError):
             f.unlink(missing_ok=True)
             return
         try:
             p = psutil.Process(pid)
-            cmd = " ".join(str(c) for c in p.cmdline())  # a spawn child's command line has no "sdxlr"
-            if "python" in p.name().lower() and ("sdxlr" in cmd or "spawn_main" in cmd):
+            if abs(p.create_time() - ctime) < 1.0:  # the same process, not a reused pid
                 p.kill()
                 p.wait(5)
                 log.info(f"killed a stale engine worker (pid {pid}) left by an earlier app run")
@@ -309,10 +306,14 @@ class EngineClient:
                         task.step(ev["done"], ev["total"])
                     elif t == "result":
                         res = ev.get("result") or {}
-                        if op == "load":
-                            self._apply_loaded(args, res)
-                        elif op == "unload":
-                            self._reset()
+                        st = res.pop("state", None)
+                        with self._lock:
+                            if st:  # the worker's own view after the op, ahead of the next heartbeat
+                                self._apply_beat({**self.beat, **st})
+                            elif op == "load":
+                                self._apply_loaded(args, res)
+                            elif op == "unload":
+                                self._reset()
                         return res
                     elif t == "cancelled":
                         raise Cancelled("cancelled")
@@ -352,9 +353,5 @@ class EngineClient:
 
 
 def make() -> EngineClient:
-    """The engine for the web process; the fake one for local UI tests
-    (SDXLR_FAKE_ENGINE=1) so a UI run needs no torch and no GPU."""
-    if os.environ.get("SDXLR_FAKE_ENGINE"):
-        from .fake import FakeEngineClient
-        return FakeEngineClient()  # type: ignore[return-value]
+    """The engine for the web process. SDXLR_FAKE_ENGINE=1 makes the worker run the stub engine."""
     return EngineClient()
