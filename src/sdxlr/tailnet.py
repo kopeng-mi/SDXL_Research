@@ -71,6 +71,15 @@ def up(port: int, authkey: str | None = None) -> str:
     return _address(port)
 
 
+def down() -> None:
+    """Sign out when the app stops: an ephemeral node is removed at once, so the next VM gets the name back."""
+    try:
+        if _running():
+            cli("logout", timeout=20)
+    except Exception:
+        pass
+
+
 def _address(port: int) -> str:
     st = json.loads(cli("status", "--json").stdout)
     dns = st["Self"].get("DNSName", "").rstrip(".")

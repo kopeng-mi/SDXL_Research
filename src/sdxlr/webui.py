@@ -1,9 +1,14 @@
 """SDXL_Research UI (NiceGUI). Runs inside the main venv.
 
-  python -m sdxlr.webui [--port 7860] [--access auto|tailscale|cloudflare|none] [--sync]
+  python -m sdxlr.webui [--port 7860] [--access tailscale|none] [--sync]
 
-Access: tailscale = fixed private address (needs TS_AUTHKEY), cloudflare = public
-trycloudflare.com link that changes each launch; auto = tailscale when the key is set.
+Access: Tailscale gives a fixed private address, http://sdxlr:7860, on your
+tailnet (needs TS_AUTHKEY). The app signs out of Tailscale when it stops, so an
+ephemeral key frees the name for the next Colab VM.
+
+The event loop must stay free (it answers the browser's keep-alive pings):
+memory/disk numbers are sampled in a background thread, and timers only push
+changes to the page.
 
 Layout: a sidebar (pages + live status: model, memory, current task, session
 code) and one page at a time. Model loading and generation run in this process
@@ -401,6 +406,25 @@ def bar_html(total: float, blocks, preview=None) -> str:
     return f'<div class="bar">{segs}</div>'
 
 
+USAGE: dict = {}
+
+
+def _sample_usage() -> None:
+    """nvidia-smi, psutil and folder sizes are slow: measure here, never in the event loop."""
+    while True:
+        try:
+            USAGE.update(resources.usage(eng, jm))
+        except Exception as e:
+            log.info(f"usage sample failed: {e}")
+        time.sleep(2)
+
+
+def set_if(el, attr: str, value) -> None:
+    """Only send a change to the browser when the value really changed."""
+    if getattr(el, attr) != value:
+        setattr(el, attr, value)
+
+
 def load_preview(S):
     if eng.pipe is not None and eng.model_path == wanted(S):
         return None
@@ -533,17 +557,19 @@ def page_generate(S, sheet):
         if t:
             pct = 100 * t.done / t.total if t.total else 0
             step = f" {t.done}/{t.total}" if t.total else ""
-            status.text = f"{t.stage}{step}" + (f". {t.detail}" if t.detail else "")
-            prog.content = f'<div class="progress"><span style="width:{pct:.0f}%"></span></div>'
-            gen_b.text = f"{t.stage}{step}"
-            gen_b.classes(add="busy")
+            set_if(status, "text", f"{t.stage}{step}" + (f". {t.detail}" if t.detail else ""))
+            set_if(prog, "content", f'<div class="progress"><span style="width:{pct:.0f}%"></span></div>')
+            set_if(gen_b, "text", f"{t.stage}{step}")
+            if "busy" not in gen_b.classes:
+                gen_b.classes(add="busy")
         else:
-            status.text = ""
-            prog.content = '<div class="progress"><span style="width:0%"></span></div>'
-            gen_b.text = "Change the area" if S["edit"] else "Generate"
-            gen_b.classes(remove="busy")
-        edit_b.text = "Back to the image" if S["edit"] else "Change an area"
-        load_b.text = "Loaded" if eng.pipe is not None and eng.model_path == wanted(S) else "Load model"
+            set_if(status, "text", "")
+            set_if(prog, "content", '<div class="progress"><span style="width:0%"></span></div>')
+            set_if(gen_b, "text", "Change the area" if S["edit"] else "Generate")
+            if "busy" in gen_b.classes:
+                gen_b.classes(remove="busy")
+        set_if(edit_b, "text", "Back to the image" if S["edit"] else "Change an area")
+        set_if(load_b, "text", "Loaded" if eng.pipe is not None and eng.model_path == wanted(S) else "Load model")
 
     draw_canvas()
     ui.timer(0.5, tick)
@@ -1133,7 +1159,7 @@ def root():
     ui.colors(primary="#9AA3AE")
     code = app.storage.browser.get("code")
     if not session.valid(code) or session.load(code) is None:
-        # a new link (the tunnel URL changes each launch) has no cookie: one user, so continue the latest session
+        # a new browser (or a new VM) has no cookie: one user, so continue the latest session
         code = session.latest() or session.new_code()
         app.storage.browser["code"] = code
     S = state_for(code)
@@ -1196,10 +1222,10 @@ def root():
             dot, state = ("busy", "Generating") if busy else ("ok", "Ready")
         else:
             dot, state = "", "Pick a model and press Generate"
-        model_l.content = (f'<div><span class="dot {dot}"></span>{loaded_label() if eng.pipe is not None else "No model loaded"}</div>'
-                           f'<div class="muted">{state}</div>')
+        set_if(model_l, "content", f'<div><span class="dot {dot}"></span>{loaded_label() if eng.pipe is not None else "No model loaded"}</div>'
+                                   f'<div class="muted">{state}</div>')
         # memory
-        u = resources.usage(eng, jm)
+        u = dict(USAGE)
         prev = load_preview(S)
         html = []
         for name, (total, blocks) in u.items():
@@ -1209,7 +1235,7 @@ def root():
             html.append(f'<div class="t-small" style="display:flex;justify-content:space-between">'
                         f'<span class="muted">{name}</span><span class="tnum">{used:.1f} / {total:.0f} GB</span></div>'
                         + bar_html(total, blocks, prev if name == "VRAM" else None))
-        mem.content = '<div style="display:flex;flex-direction:column;gap:6px">' + "".join(html) + "</div>"
+        set_if(mem, "content", '<div style="display:flex;flex-direction:column;gap:6px">' + "".join(html) + "</div>")
         # current work: in-process task first, then a running job
         job = next((j for j in jm.recent(20) if j.status == "running"), None)
         queued = sum(j.status == "queued" for j in jm.jobs.values())
@@ -1229,7 +1255,7 @@ def root():
             task_l.text, task_d.text, pct = "Nothing running", "", 0
         if queued:
             task_d.text += f" ({queued} queued)"
-        task_p.content = f'<div class="progress"><span style="width:{pct:.0f}%"></span></div>' if (busy or job) else ""
+        set_if(task_p, "content", f'<div class="progress"><span style="width:{pct:.0f}%"></span></div>' if (busy or job) else "")
 
     side_tick()
     ui.timer(1.0, side_tick)
@@ -1238,7 +1264,7 @@ def root():
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7860)
-    ap.add_argument("--access", choices=["auto", "tailscale", "cloudflare", "none"], default="auto")
+    ap.add_argument("--access", choices=["tailscale", "none"], default="tailscale")
     ap.add_argument("--sync", action="store_true", help="pull presets + LoRAs from the sync repo at start")
     a = ap.parse_args()
     setup_logging()
@@ -1254,31 +1280,25 @@ def main() -> None:
     secret_f = WORK / ".ui_secret"
     if not secret_f.exists():
         secret_f.write_text(secrets.token_hex(16))
-    access = a.access
-    if access == "auto":
-        import os
-        access = "tailscale" if os.environ.get("TS_AUTHKEY") else "cloudflare"
+    threading.Thread(target=_sample_usage, daemon=True).start()
 
     def announce(u):
         log.info("=" * 60)
         log.info(f"Open the app: {u}")
         log.info("=" * 60)
 
-    if access == "tailscale":
+    if a.access == "tailscale":
         from . import tailnet
 
         def ts_up():
             try:
                 announce(tailnet.up(a.port) + "  (on a device signed in to your Tailscale)")
             except Exception as e:
-                log.info(f"Tailscale failed ({e}); falling back to a Cloudflare link")
-                from . import tunnel
-                tunnel.start(a.port, announce)
+                log.info(f"Tailscale failed: {e}")
+                log.info(f"Add TS_AUTHKEY in Colab Secrets, run Setup again, then Launch. Local address: http://127.0.0.1:{a.port}")
 
         app.on_startup(lambda: threading.Thread(target=ts_up, daemon=True).start())
-    elif access == "cloudflare":
-        from . import tunnel
-        app.on_startup(lambda: tunnel.start(a.port, announce))
+        app.on_shutdown(tailnet.down)
     log.info(f"app starting on port {a.port}")
     ui.run(root, host="0.0.0.0", port=a.port, title="SDXL Research", show=False, reload=False, dark=True,
            storage_secret=secret_f.read_text(), reconnect_timeout=600, favicon="◐")
