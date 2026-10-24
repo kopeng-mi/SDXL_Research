@@ -16,7 +16,7 @@ import time
 from PIL import Image, ImageDraw
 
 from .client import DEATH_MSG, WorkerDied
-from .worker import open_source, save_images
+from .worker import _edit_images, open_source, save_edit_masks, save_images, work_copy
 
 FAKE_BEAT = {"type": "beat", "parts": [], "alloc": 0.3, "reserved": 0.5, "rss": 0.4}
 
@@ -131,6 +131,35 @@ class FakeEngineClient:
             raise WorkerDied(DEATH_MSG)
         t0 = time.time()
         j = args["job"]
+        tool = j.get("tool")
+        if tool in ("area", "extend"):  # same crop-and-stitch path as the worker, pattern instead of a model
+            check = task.check if task is not None else (lambda: None)
+            step = task.step if task is not None else (lambda d, t: None)
+            images, masks, seed, note = _edit_images(self, args, step, check,
+                                                     pattern=lambda size, s: self._img(size[0], size[1], "edit fake"))
+            meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
+            paths = save_images(images, meta, seed)
+            save_edit_masks(paths, masks)
+            return {"paths": paths, "seed": seed, "info": f"{meta['seconds']}s | {note} (fake) | seed {seed}",
+                    "size": list(images[0].size)}
+        if tool == "whole":
+            from . import edit
+            original = edit.load_source(j["image"])
+            base, _, _ = work_copy(original, 8)
+            steps = max(1, int(j.get("steps", 20)))
+            for i in range(1, steps + 1):
+                if task is not None:
+                    task.step(i, steps)
+                self._sleep(12 / steps, task)
+            seed = int(j.get("seed", -1)) if int(j.get("seed", -1)) >= 0 else random.randrange(2**31 - 1)
+            count = max(1, min(4, int(j.get("count", 1))))
+            images = [self._img(base.width, base.height, f"{j['prompt'][:40]} | whole fake") for _ in range(count)]
+            if j.get("keep_size"):
+                images = [im.resize(original.size, Image.LANCZOS) for im in images]
+            meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
+            paths = save_images(images, meta, seed)
+            return {"paths": paths, "seed": seed, "info": f"{meta['seconds']}s | fake | seed {seed}",
+                    "size": list(images[0].size)}
         steps = max(1, int(j.get("steps", 20)))
         if task is not None:
             task.set_stage("Generating")

@@ -337,6 +337,43 @@ class Engine:
         torch.cuda.empty_cache()  # give back the activations' memory between images
         return images, seed, info
 
+    def inpaint_crop(self, job: Job, crop: Image.Image, mask: Image.Image) -> Image.Image:
+        """Inpaint one prepared crop (crop-and-stitch): the crop is ~1 MP and multiple-aligned,
+        the mask is already grown; blending back is the caller's (edit.paste_back) job."""
+        if self.pipe is None:
+            raise RuntimeError("no model loaded")
+        img = crop.convert("RGB")
+        m = mask.convert("L")
+        gen = torch.Generator("cpu").manual_seed(job.seed if job.seed >= 0 else 0)
+        if self.kind == "zimage":
+            if self._inpaint is None:
+                from diffusers import ZImageInpaintPipeline
+                # GGUF/bnb weights can't be cast, which from_pipe tries; reuse the parts as they are
+                self._inpaint = ZImageInpaintPipeline(**self.pipe.components)
+            self.set_loras(job.loras)
+            w, h = (img.width // 16) * 16, (img.height // 16) * 16
+            if (w, h) != img.size:
+                img = img.resize((w, h))
+            kw = dict(prompt=job.prompt, num_inference_steps=job.steps, guidance_scale=job.cfg,
+                      generator=gen, **_step_cb(job))
+            if job.cfg > 1 and job.negative:
+                kw["negative_prompt"] = job.negative
+            return self._inpaint(image=img, mask_image=m.resize(img.size), width=w, height=h,
+                                 strength=job.strength, **kw).images[0]
+        if self._inpaint is None:
+            from diffusers import StableDiffusionXLInpaintPipeline
+            self._inpaint = StableDiffusionXLInpaintPipeline.from_pipe(self.pipe, torch_dtype=torch.float16)
+        lora_key = tuple(sorted((p, round(w, 4)) for p, w in job.loras if p and w))
+        self.set_loras(job.loras)
+        self._set_sampler(job.sampler)
+        emb = self._encode(job, lora_key)
+        w, h = (img.width // 8) * 8, (img.height // 8) * 8
+        if (w, h) != img.size:
+            img = img.resize((w, h))
+        return self._inpaint(image=img, mask_image=m.resize(img.size), width=w, height=h,
+                             strength=job.strength, num_inference_steps=job.steps,
+                             guidance_scale=job.cfg, generator=gen, **emb, **_step_cb(job)).images[0]
+
     def upscale(self, job: Job, scale: float = 2.0, tile: int = 1024, overlap: int = 128,
                 on_tile=None) -> tuple[Image.Image, int, str]:
         """Enlarge job.image by `scale`, then refine overlapping tiles with image-to-image (job.prompt,
@@ -348,7 +385,10 @@ class Engine:
         seed = job.seed if job.seed >= 0 else int(torch.randint(0, 2**31 - 1, (1,)))
         m = 16 if self.kind == "zimage" else 8
         src = job.image.convert("RGB")
+        from .edit import cap_size
         W, H = (int(src.width * scale) // m) * m, (int(src.height * scale) // m) * m
+        cw, ch = cap_size(W, H)  # 8 MP output cap
+        W, H = (cw // m) * m, (ch // m) * m
         big = src.resize((W, H), Image.LANCZOS)
         if W <= tile and H <= tile:
             boxes = [(0, 0, W, H)]

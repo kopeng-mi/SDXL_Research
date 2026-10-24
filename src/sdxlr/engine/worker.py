@@ -20,6 +20,8 @@ import os
 import threading
 import time
 
+from PIL import Image
+
 from ..paths import OUTPUTS, RUN
 
 GB = 2**30
@@ -149,9 +151,91 @@ def _job_from(eng, j: dict, step) -> "object":
                       image=image, mask=mask, strength=float(j.get("strength", 0.75)), on_step=step)
 
 
+def _plain_job(j: dict, seed: int, step, image=None, count: int = 1) -> "object":
+    """A Job built by hand: the pipelines get called by the caller (inpaint_crop / generate)."""
+    from . import models
+    w, h = image.size if image is not None else (int(j["width"]), int(j["height"]))
+    return models.Job(prompt=j["prompt"], negative=j.get("negative", ""), steps=int(j["steps"]),
+                      cfg=float(j["cfg"]), width=w, height=h, seed=seed, count=count,
+                      sampler=j.get("sampler", "dpmpp_2m_karras"), clip_skip=int(j.get("clip_skip", 2)),
+                      loras=[(p, float(v)) for p, v in j.get("loras") or []], image=image,
+                      strength=float(j.get("strength", 0.75)), on_step=step)
+
+
+def save_edit_masks(paths: list[str], masks: list) -> None:
+    """The mask next to each result, so 'edit again' can reuse it."""
+    for p, m in zip(paths, masks):
+        try:
+            m.convert("L").save(p[:-4] + "_mask.png")
+        except Exception:
+            pass
+
+
+def _edit_images(eng, args, step, check, pattern=None):
+    """Crop-and-stitch edits: area (painted mask or boxes) and extend (outpaint).
+    pattern(size, seed) makes the placeholder crop when there is no engine (fake)."""
+    import random
+
+    from . import edit
+    j = args["job"]
+    tool = j.get("tool")
+    multiple = 16 if eng.kind == "zimage" else 8
+    base, _fx, _fy = work_copy(edit.load_source(j["image"]), multiple)
+    if tool == "extend":
+        base, mask = edit.outpaint_canvas(base, tuple(j.get("extend") or (0, 0, 0, 0)), multiple)
+    elif j.get("mask"):
+        mask = edit.mask_from_painted(j["mask"], base.size)
+    else:
+        mask = edit.mask_from_boxes(base.size, j.get("boxes") or [])
+    if edit.mask_bbox(mask) is None:
+        raise RuntimeError("nothing is painted: mark the area to change first")
+    regions = edit.split_regions(mask) or [mask]
+    count = max(1, min(4, int(j.get("count", 1))))
+    seed = int(j.get("seed", -1)) if int(j.get("seed", -1)) >= 0 else random.randrange(2**31 - 1)
+    feather = int(j.get("feather", 12))
+    outs, masks = [], []
+    for c in range(count):
+        img = base.copy()
+        for rm in regions:
+            plan = edit.prepare(img, rm, multiple, feather_px=feather)
+            check()
+            if pattern is None:
+                job = _plain_job(j, seed + c, step)
+                out = eng.inpaint_crop(job, plan.crop, plan.crop_mask)
+            else:
+                out = pattern(plan.crop.size, seed + c)
+            img = edit.paste_back(img, out, plan)
+            check()
+        outs.append(img)
+        masks.append(mask)
+    return outs, masks, seed, f"{len(outs)} image(s) from {len(regions)} region(s)"
+
+
 def _op_generate(eng, args, status, step, check):
+    from . import edit
     t0 = time.time()
-    job = _job_from(eng, args["job"], step)
+    j = args["job"]
+    tool = j.get("tool")
+    if tool in ("area", "extend"):
+        images, masks, seed, note = _edit_images(eng, args, step, check)
+        meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
+        paths = save_images(images, meta, seed)
+        save_edit_masks(paths, masks)
+        return {"paths": paths, "seed": seed, "info": f"{meta['seconds']}s | {note} | seed {seed}",
+                "size": list(images[0].size)}
+    if tool == "whole":
+        multiple = 16 if eng.kind == "zimage" else 8
+        original = edit.load_source(j["image"])
+        base, _, _ = work_copy(original, multiple)
+        check()
+        job = _plain_job(j, int(j.get("seed", -1)), step, image=base, count=max(1, min(4, int(j.get("count", 1)))))
+        images, seed, info = eng.generate(job)
+        if j.get("keep_size"):
+            images = [im.resize(original.size, Image.LANCZOS) for im in images]
+        meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
+        paths = save_images(images, meta, seed)
+        return {"paths": paths, "seed": seed, "info": info, "size": list(images[0].size)}
+    job = _job_from(eng, j, step)
     check()
     images, seed, info = eng.generate(job)
     check()
