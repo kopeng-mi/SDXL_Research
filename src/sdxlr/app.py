@@ -299,10 +299,12 @@ def run_train(kind, ds, name, sdxl_base, repeats, epochs, batch, res, dim, lr, t
                 "--set", f"epochs={int(epochs)}", f"repeats={int(repeats)}", f"batch_size={int(batch)}",
                 f"network_dim={int(dim)}", f"network_alpha={max(1, int(dim) * 2 // 3)}", f"unet_lr={lr}",
                 f"text_encoder_lr={te_lr}", f"lora_type={lora_type}"]
-        if (hf_repo or "").strip():
-            args += ["--hf-repo", hf_repo.strip()]
-        if resume:
-            args += ["--resume"]
+    if (hf_repo or "").strip():
+        args += ["--hf-repo", hf_repo.strip()]
+    if resume:
+        if not (hf_repo or "").strip():
+            raise gr.Error("Resume needs the HF repo the earlier run uploaded to.")
+        args += ["--resume"]
     jm.submit("train", f"train {kind} {name}", args, gpu=True)
     gr.Info("Training queued (see Jobs). The image model is unloaded while it runs.")
 
@@ -570,7 +572,7 @@ def build() -> gr.Blocks:
                                 t_te_lr = gr.Number(2e-5, label="Text encoder LR (SDXL, 0 = off)")
                                 t_type = gr.Radio(["LoRA", "LoCon"], value="LoRA", label="Type (SDXL)")
                             with gr.Row():
-                                t_hf = gr.Textbox(label="Upload LoRAs + resume state to private HF repo (SDXL)")
+                                t_hf = gr.Textbox(label="Private HF repo for LoRAs + resume state", placeholder="yourname/my-loras")
                                 t_resume = gr.Checkbox(False, label="Resume from that repo")
                         t_go = gr.Button("Start training", variant="primary")
                     with gr.Column(scale=2):

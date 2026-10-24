@@ -9,12 +9,18 @@ T4 plan (15 GB VRAM, 12.7 GB RAM, no bf16/fp8 compute):
      stored as scaled fp8 (half the memory; compute stays fp16), 512px default
   3. convert every saved LoRA to diffusers format (*_diffusers.safetensors),
      which the app/compare load on top of Z-Image Turbo
+
+Resume (simple): with --hf-repo, LoRAs + training state are uploaded to that
+private repo each epoch. --resume downloads the newest state and trains the
+remaining epochs. musubi restarts its epoch counter on resume, so a resumed
+run is named NAME_rDONE and its files are renumbered to the real epoch.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -52,13 +58,33 @@ def _run(script: str, *args: str) -> None:
         sys.exit(f"{script} failed with exit code {rc}")
 
 
+def _done(state: str, name: str) -> int:
+    """Epochs finished by a state dir: NAME-000003-state or NAME_r3-000002-state."""
+    m = re.fullmatch(rf"{re.escape(name)}(?:_r(\d+))?-(\d+)-state", state)
+    return int(m[1] or 0) + int(m[2]) if m else -1
+
+
+def latest_state(hf_repo: str, name: str, dst: Path) -> tuple[Path, int] | None:
+    from huggingface_hub import HfApi, snapshot_download
+    states = {f.split("/")[0] for f in HfApi().list_repo_files(hf_repo) if "-state/" in f}
+    best = max(states, key=lambda s: _done(s, name), default=None)
+    if best is None or _done(best, name) < 0:
+        return None
+    snapshot_download(hf_repo, allow_patterns=[f"{best}/*"], local_dir=dst)
+    return dst / best, _done(best, name)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
     ap.add_argument("--images", type=Path, required=True, help="images + .txt captions")
     ap.add_argument("--preset", default="zimage_person")
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE")
+    ap.add_argument("--hf-repo", help="private HF repo for LoRAs + resume state")
+    ap.add_argument("--resume", action="store_true")
     a = ap.parse_args()
+    if a.resume and not a.hf_repo:
+        sys.exit("--resume needs --hf-repo")
 
     c = yaml.safe_load((PRESETS / f"{a.preset}.yaml").read_text())
     c |= {k: _cast(v) for k, v in (s.split("=", 1) for s in a.set)}
@@ -66,6 +92,17 @@ def main() -> None:
     out = WORK / "runs" / a.name
     cache = out / "cache"
     out.mkdir(parents=True, exist_ok=True)
+    done, state, run_name = 0, None, a.name
+    if a.resume:
+        found = latest_state(a.hf_repo, a.name, out / "resume")
+        if found:
+            state, done = found
+            run_name = f"{a.name}_r{done}"
+        print(f"resume from {state} ({done} epochs done)" if state else "no state found, starting fresh", flush=True)
+    left = int(c["epochs"]) - done
+    if left <= 0:
+        sys.exit(f"all {c['epochs']} epochs already done; raise epochs to train more")
+
     d = MODELS / "zimage_train"
     dit = fetch(c.get("dit") or FILES["base"], d)
     vae = fetch(FILES["vae"], d)
@@ -93,15 +130,27 @@ def main() -> None:
         "--optimizer_type", c["optimizer"], "--learning_rate", str(c["lr"]),
         "--network_module", "networks.lora_zimage",
         "--network_dim", str(c["network_dim"]), "--network_alpha", str(c["network_alpha"]),
-        "--max_train_epochs", str(c["epochs"]), "--save_every_n_epochs", str(c["save_every"]),
+        "--max_train_epochs", str(left), "--save_every_n_epochs", str(c["save_every"]),
         "--seed", str(c["seed"]), "--max_data_loader_n_workers", "1", "--persistent_data_loader_workers",
-        "--output_dir", str(out), "--output_name", a.name,
+        "--output_dir", str(out), "--output_name", run_name,
     ]
+    if a.hf_repo:
+        args += ["--save_state", "--save_last_n_epochs_state", "1", "--huggingface_repo_id", a.hf_repo,
+                 "--huggingface_repo_type", "model", "--huggingface_repo_visibility", "private",
+                 "--save_state_to_huggingface", "--async_upload"]
+    if state:
+        args += [f"--resume={state}"]
     if c["fp8"]:
         args += ["--fp8_base", "--fp8_scaled"]  # fp8 storage only; T4 computes in fp16
     if c.get("blocks_to_swap"):
         args += ["--blocks_to_swap", str(c["blocks_to_swap"])]  # uses system RAM (only 12.7 GB on Colab)
     _run("zimage_train_network.py", *args)
+
+    if run_name != a.name:  # renumber a resumed run to the real epoch: NAME_r3-000002 -> NAME-000005
+        for f in out.glob(f"{run_name}*.safetensors"):
+            m = re.fullmatch(rf"{re.escape(run_name)}-(\d+)", f.stem)
+            new = f"{a.name}-{int(m[1]) + done:06d}" if m else a.name
+            f.rename(f.with_name(new + f.suffix))
 
     for lora in sorted(out.glob(f"{a.name}*.safetensors")):
         if lora.stem.endswith("_diffusers"):
