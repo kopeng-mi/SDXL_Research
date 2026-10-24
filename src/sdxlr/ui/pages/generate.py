@@ -10,9 +10,9 @@ from nicegui import run, ui
 
 from ... import history, presets
 from ...activity import Cancelled, act
-from ..core import (ASPECTS, SAMPLERS, STYLES, Z_ENCODERS, busy_task, check_generate, check_model, eng, err,
-                    generate_blocking, is_loaded, load_blocking, lora_names, model_names, picked_label, reuse, thumb,
-                    url, z_names)
+from ..core import (ASPECTS, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, eng,
+                    err, generate_blocking, is_loaded, load_blocking, lora_names, model_names, picked_label, reuse,
+                    save_upload, task_is_loading, thumb, url, z_names)
 from ..theme import button, labeled, main_button, seg
 
 PRESET_KEYS = ("kind", "sdxl_model", "z_model", "mode", "prompt", "negative", "style", "aspect", "count", "seed",
@@ -48,15 +48,15 @@ async def do_generate(S):
     except ValueError as e:
         ui.notify(str(e), type="warning")
         return
-    task = act.start("generate", S["prompt"][:50])
+    tool = S["tool"]
+    task = act.start("generate", (S["prompt"] or TOOL_LABEL[tool])[:50])
     try:
-        was_area = S["edit"]
         paths, info, seed = await run.io_bound(generate_blocking, copy.deepcopy(S), task)
         task.finish(info)
-        S.update(image=paths[0], info=info, last_seed=seed, edit=False, boxes=[])
-        if was_area:
-            ui.notify("Area changed. The new image is a separate copy; the original is in the recent images",
-                      type="positive")
+        S.update(image=paths[0], info=info, last_seed=seed, boxes=[])
+        if tool:  # keep working on the new result; the original stays in the recent images
+            S["src"] = paths[0]
+            ui.notify(f"{TOOL_LABEL[tool]}: done. The original is still in the recent images", type="positive")
     except Cancelled:
         task.fail("")
         ui.notify("Cancelled")
@@ -212,6 +212,7 @@ def page(S):
             gen_b = main_button("Generate", lambda: do_generate(S))
             stop_b = button("Cancel", lambda: (busy_task() and busy_task().cancel()), kind="stop").style("height:46px")
         ui.label().bind_text_from(S, "info", lambda v: f"Last image: {v}" if v else "").classes("hint tnum")
+        tool_hint = ui.label().classes("hint")
 
         # ----- more options, grouped -----
         with ui.expansion("Style and negative prompt").classes("w-full"):
@@ -242,27 +243,58 @@ def page(S):
             ui.label("Changing these needs the model to load again.").classes("hint")
 
     # ----- image side -----
+    TOOL_TEXT = {
+        "area": "Change an area: drag on the image to mark what to change. Your prompt describes the new content.",
+        "whole": "Change the whole image: your prompt guides it. Low strength keeps the photo, high reimagines it.",
+        "upscale": "Upscale: makes the image bigger and adds detail in tiles. The prompt is optional guidance.",
+    }
     with right:
         banner = ui.column().classes("banner w-full gap-2")
         with banner:
-            ui.label("Change an area: drag on the image to mark what to change, then press Generate.").classes("t-small")
+            tool_l = ui.label().classes("t-small")
             with ui.row().classes("w-full items-center no-wrap gap-3"):
-                ui.label().bind_text_from(S, "strength", lambda v: f"Strength {v:.2f}").classes("t-small tnum") \
-                    .style("white-space:nowrap").tooltip("Low keeps more of the original; 1 repaints the area fully")
-                ui.slider(min=0.1, max=1.0, step=0.05).bind_value(S, "strength").classes("grow")
-                button("Clear marks", lambda: (S["boxes"].clear(), draw_canvas()))
-                button("Done", lambda: leave_edit())
+                for key, tip, lo, hi in (("strength", "Low keeps more of the original; 1 repaints the area fully", 0.1, 1.0),
+                                         ("whole_strength", "0.3 keeps the photo, 0.8 reimagines it", 0.1, 1.0),
+                                         ("up_strength", "0.2 to 0.35 adds detail without changing the image", 0.1, 0.6)):
+                    with ui.row().classes("grow items-center no-wrap gap-3") as row:
+                        ui.label().bind_text_from(S, key, lambda v: f"Strength {v:.2f}").classes("t-small tnum") \
+                            .style("white-space:nowrap").tooltip(tip)
+                        ui.slider(min=lo, max=hi, step=0.05).bind_value(S, key).classes("grow")
+                    row.bind_visibility_from(S, "tool", value={"strength": "area", "whole_strength": "whole",
+                                                               "up_strength": "upscale"}[key])
+                with ui.row().classes("items-center no-wrap gap-1") as scale_row:
+                    ui.label("Size").classes("t-small")
+                    seg({1.5: "1.5x", 2.0: "2x"}, S, "up_scale")
+                scale_row.bind_visibility_from(S, "tool", value="upscale")
+                clear_marks = button("Clear marks", lambda: (S["boxes"].clear(), draw_canvas()))
+                clear_marks.bind_visibility_from(S, "tool", value="area")
+                button("Done", lambda: set_tool(None))
         canvas = ui.element("div").classes("canvas w-full")
         with ui.row().classes("w-full items-center gap-2"):
             earlier = ui.label("").classes("hint")
             ui.space()
+
+            async def on_upload(e):
+                p = save_upload(await e.file.read(), e.file.name)
+                S.update(image=p, src=p, boxes=[])
+                draw_canvas()
+                ui.notify("Image added. Pick what to do with it below", type="positive")
+
+            up = ui.upload(auto_upload=True, on_upload=on_upload, max_files=1) \
+                .props("accept=image/* hide-upload-btn").style("display:none")
+            button("Upload an image", lambda: up.run_method("pickFiles"), icon="upload")
+        with ui.row().classes("w-full items-center gap-2") as actions:
             reuse_b = button("Reuse its settings", lambda: reuse_shown(), icon="settings_backup_restore")
-            edit_b = button("Change an area", lambda: enter_edit(), icon="crop_free")
+            area_b = button("Change an area", lambda: set_tool("area"), icon="crop_free")
+            whole_b = button("Change the whole image", lambda: set_tool("whole"), icon="auto_fix_high")
+            up_b = button("Upscale", lambda: set_tool("upscale"), icon="open_in_full")
+            ui.space()
             dl_b = button("Download", lambda: ui.download.file(S["image"]), icon="download")
-            clear_b = button("Clear", lambda: (S.update(image=None, edit=False, boxes=[]), draw_canvas()), icon="close")                 .tooltip("Empty the image area. The image stays in History")
+            clear_b = button("Clear", lambda: (S.update(image=None, tool=None, boxes=[]), draw_canvas()), icon="close") \
+                .tooltip("Empty the image area. The image stays in History")
         recent = ui.row().classes("w-full gap-2")
 
-    shown = {"img": None, "edit": None, "boxes": -1, "recent": None}
+    shown = {"img": None, "tool": "x", "boxes": -1, "recent": None}
     drag = {}
 
     def svg_boxes():
@@ -280,21 +312,25 @@ def page(S):
 
     overlay = {}
 
+    def shown_img():
+        return S["src"] if S["tool"] else S["image"]
+
     def draw_canvas():
-        img = S["edit_src"] if S["edit"] else S["image"]
-        shown.update(img=img, edit=S["edit"], boxes=len(S["boxes"]))
+        img = shown_img()
+        shown.update(img=img, tool=S["tool"], boxes=len(S["boxes"]))
         canvas.clear()
         with canvas:
             if img and Path(img).exists():
-                if S["edit"]:
+                if S["tool"] == "area":
                     ii = ui.interactive_image(url(img), on_mouse=on_mouse, events=["mousedown", "mouseup"]).classes("w-full")
                     ii.content = svg_boxes()
                 else:
-                    ui.image(url(img)).classes("w-full").props("fit=contain no-transition no-spinner")
+                    ui.image(url(img)).classes("w-full").props("fit=contain no-transition")
             else:
                 with ui.column().classes("items-center gap-1"):
                     ui.label("Your image shows up here").classes("muted")
-                    ui.label("Write a prompt and press Generate. The model loads by itself the first time.").classes("hint")
+                    ui.label("Write a prompt and press Generate, or upload an image to change or upscale it.") \
+                        .classes("hint")
             with ui.column().classes("overlay gap-1") as ov:
                 overlay["title"] = ui.label().classes("work")
                 overlay["bar"] = ui.html("", sanitize=False).classes("w-full")
@@ -304,32 +340,38 @@ def page(S):
 
     def draw_recent():
         items = history.items(12)
-        sig = [str(p) for p, _ in items] + [S["image"]]
+        sig = [str(p) for p, _ in items] + [shown_img()]
         if sig == shown["recent"]:
             return
         shown["recent"] = sig
         recent.clear()
         with recent:
             for p, m in items:
-                ui.image(thumb(p, 160)).classes("thumb" + (" sel" if str(p) == S["image"] else "")) \
-                    .props("no-transition no-spinner").tooltip((m.get("prompt_raw") or "")[:80]) \
-                    .on("click", lambda p=p: (S.update(image=str(p), edit=False), draw_canvas()))
+                tip = "Uploaded: " + m.get("name", "") if m.get("uploaded") else (m.get("prompt_raw") or "")[:80]
+                ui.image(thumb(p, 160)).classes("thumb" + (" sel" if str(p) == shown_img() else "")) \
+                    .props("no-transition no-spinner").tooltip(tip).on("click", lambda p=p: pick(str(p)))
 
-    def enter_edit():
-        if not S["image"]:
-            ui.notify("Generate or pick an image first", type="warning")
-            return
-        S.update(edit=True, edit_src=S["image"], boxes=[])
+    def pick(p):
+        S.update(image=p, boxes=[])
+        if S["tool"]:
+            S["src"] = p  # the open tool now works on this image
         draw_canvas()
 
-    def leave_edit():
-        S.update(edit=False, boxes=[])
+    def set_tool(tool):
+        if tool and not S["image"]:
+            ui.notify("Generate, pick or upload an image first", type="warning")
+            return
+        S.update(tool=tool, src=S["image"] if tool else None, boxes=[])
         draw_canvas()
 
     def reuse_shown():
         j = Path(S["image"]).with_suffix(".json") if S["image"] else None
         if j and j.exists():
-            missing = reuse(S, json.loads(j.read_text(encoding="utf-8")))
+            meta = json.loads(j.read_text(encoding="utf-8"))
+            if meta.get("uploaded"):
+                ui.notify("This image was uploaded, so it has no settings to reuse", type="warning")
+                return
+            missing = reuse(S, meta)
             draw_loras()
             ui.notify("Settings filled in from this image. The seed is now fixed, so it makes the same image",
                       type="positive")
@@ -337,20 +379,19 @@ def page(S):
                 ui.notify(f"Missing LoRAs (add them in Library): {', '.join(missing)}", type="warning")
 
     def tick():
-        if (shown["img"] != (S["edit_src"] if S["edit"] else S["image"]) or shown["edit"] != S["edit"]
-                or shown["boxes"] != len(S["boxes"])):
+        if shown["img"] != shown_img() or shown["tool"] != S["tool"] or shown["boxes"] != len(S["boxes"]):
             draw_canvas()
         draw_recent()
         t = busy_task()
         # model card
-        if t and t.kind == "load" or (t and t.stage not in ("Generating", "Changing the area") and not is_loaded(S)):
+        if task_is_loading(t):
             pct = f" {100 * t.done // t.total}%" if t.total else ""
             ms = f'<span class="dot busy"></span>Loading {picked_label(S)}: {t.stage.lower()}{pct}'
             mb = "Cancel"
         elif is_loaded(S):
             ms, mb = f'<span class="dot ok"></span>{picked_label(S)} is ready', "Unload"
         else:
-            other = f" (another model is in memory)" if eng.pipe is not None else ""
+            other = " (another model is in memory)" if eng.pipe is not None else ""
             ms, mb = f'<span class="dot"></span>{picked_label(S)} is not loaded{other}', "Load"
         if mstate.content != ms:
             mstate.content = ms
@@ -358,8 +399,10 @@ def page(S):
             mbtn.text = mb
             mbtn.classes(replace="btn-stop" if mb == "Cancel" else "btn-2")
         # main button + overlay
+        idle_label = TOOL_LABEL[S["tool"]] + (f" {S['up_scale']:g}x" if S["tool"] == "upscale" else "")
         if t:
-            step = f" {t.done}/{t.total}" if t.total else ""
+            unit = " tiles" if t.stage.startswith("Upscaling") else ""
+            step = f" {t.done}/{t.total}{unit}" if t.total else ""
             label = f"{t.stage}{step}"
             if gen_b.text != label:
                 gen_b.text = label
@@ -374,20 +417,30 @@ def page(S):
                     overlay["bar"].content = html
                 overlay["detail"].text = t.detail or f"{int(t.elapsed)} s"
         else:
-            if gen_b.text != "Generate":
-                gen_b.text = "Generate"
+            if gen_b.text != idle_label:
+                gen_b.text = idle_label
             gen_b.enable()
             stop_b.set_visibility(False)
             if "box" in overlay:
                 overlay["box"].set_visibility(False)
+        th = {"area": "Uses your prompt for the marked area.", "whole": "Uses your prompt and the strength above the image.",
+              "upscale": "Press Done above the image to go back to making new images."}.get(S["tool"], "")
+        if tool_hint.text != th:
+            tool_hint.text = th
         # image actions and hints
-        banner.set_visibility(S["edit"])
+        banner.set_visibility(bool(S["tool"]))
+        if S["tool"] and tool_l.text != TOOL_TEXT[S["tool"]]:
+            tool_l.text = TOOL_TEXT[S["tool"]]
         has = bool(S["image"])
-        for b in (reuse_b, edit_b, dl_b, clear_b):
-            b.set_visibility(has and not S["edit"])
+        actions.set_visibility(has)
+        for b in (area_b, whole_b, up_b):
+            b.set_visibility(not S["tool"])
+        meta_p = Path(S["image"]).with_suffix(".json") if has else None
+        uploaded = bool(meta_p and meta_p.exists() and '"uploaded": true' in meta_p.read_text(encoding="utf-8"))
+        reuse_b.set_visibility(has and not S["tool"] and not uploaded)
         latest = history.items(1)
         is_old = has and latest and str(latest[0][0]) != S["image"]
-        txt = "An earlier image. Its settings may differ from the form." if is_old and not S["edit"] else ""
+        txt = "An earlier image. Its settings may differ from the form." if is_old and not S["tool"] and not uploaded else ""
         if earlier.text != txt:
             earlier.text = txt
         sh = "Random each time" if int(S["seed"] or -1) < 0 else "Fixed: the same settings make the same image"

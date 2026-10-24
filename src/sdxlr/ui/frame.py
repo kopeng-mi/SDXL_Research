@@ -18,7 +18,7 @@ from ..activity import log, setup_logging
 from ..jobs import fmt_secs
 from . import core
 from .core import (LORAS, MODELS, USAGE, busy_task, eng, estimate_preview, jm, job_error, loaded_label, running_job,
-                   state_for)
+                   state_for, task_is_loading)
 from .pages import activity, compare, dataset, generate, history, library, train
 from .theme import HEAD, bar_html, button, confirm
 
@@ -103,8 +103,7 @@ def root():
         job = running_job()
         # model
         name = loaded_label()
-        loading = t and (t.kind == "load" or t.stage not in ("Generating", "Changing the area", "Done"))
-        if loading:
+        if task_is_loading(t):
             what = t.title if t.kind == "load" else "the model"
             ms = f'<div><span class="dot busy"></span>Loading {what}</div><div class="muted">{t.stage}</div>'
         elif name:

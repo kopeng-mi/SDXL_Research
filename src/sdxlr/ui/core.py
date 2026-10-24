@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import subprocess
 import sys
@@ -61,7 +62,10 @@ DEFAULTS = {
     "z_quant": "nf4", "mode": "Speed", "prompt": "", "negative": NEG_SDXL, "style": "Photo",
     "aspect": "Portrait 896x1152", "count": 1, "seed": -1, "last_seed": None, "use_adv": False, "steps": 20,
     "cfg": 5.0, "sampler": "dpmpp_2m_karras", "clip_skip": 2, "loras": [], "image": None, "info": "",
-    "edit": False, "edit_src": None, "boxes": [], "strength": 0.75,
+    # tool on the shown image: None = new image, "area" = change marked boxes, "whole" = change the whole image,
+    # "upscale" = enlarge and add detail; src = the image the tool works on
+    "tool": None, "src": None, "boxes": [], "strength": 0.75, "whole_strength": 0.5, "up_strength": 0.3,
+    "up_scale": 2.0,
     # dataset
     "ds_name": "my_photos", "ds_link": "", "ds_pick": None, "cap_model": "qwen", "cap_trigger": "ohwx_person",
     "cap_class": "woman", "cap_prompt": "", "cap_limit": 0, "cap_over": False,
@@ -96,17 +100,24 @@ def autosave_loop() -> None:
 
 
 USAGE: dict = {}
+DISK = {"rate": 0.0}  # bytes/s the disk is filling: > 1 MB/s means something is downloading
 OPEN_JOB: dict[str, str] = {}  # browser tab id -> job whose log Activity should open
 
 
 def sample_usage_loop() -> None:
     """NVML, psutil and folder sizes are slow: measure here, never in the event loop."""
+    import shutil
+    root = "/content" if Path("/content").exists() else "."
+    last, last_t = shutil.disk_usage(root).used, time.time()
     while True:
         try:
             USAGE.update(resources.usage(eng, jm))
         except Exception as e:
             log.info(f"usage sample failed: {e}")
         time.sleep(2)
+        used, now = shutil.disk_usage(root).used, time.time()
+        DISK["rate"] = 0.6 * DISK["rate"] + 0.4 * max(used - last, 0) / (now - last_t)
+        last, last_t = used, now
 
 
 # ---------- names and files ----------
@@ -208,13 +219,18 @@ def busy_task():
     return next((t for t in act.running() if t.kind in ("load", "generate")), None)
 
 
+def task_is_loading(t) -> bool:
+    """True while a load (or the load step of a generation) is going on."""
+    return bool(t) and (t.kind == "load" or not t.stage.startswith(("Generating", "Changing", "Upscaling", "Done")))
+
+
 def running_job():
     return next((j for j in jm.recent(30) if j.status == "running"), None)
 
 
 def _prefetch(task, *args) -> None:
     """Download what a load needs in a child process, so Cancel can stop it."""
-    task.set_stage("Checking files")
+    task.set_stage("Getting the model files")
     task.proc = subprocess.Popen([sys.executable, "-u", "-m", "sdxlr.fetch", *args], stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
     tail = []
@@ -266,11 +282,16 @@ def _mask(size, boxes):
     return m
 
 
+TOOL_LABEL = {None: "Generate", "area": "Change the area", "whole": "Change the whole image", "upscale": "Upscale"}
+
+
 def check_generate(S) -> None:
-    if not S["prompt"].strip():
+    if not S["prompt"].strip() and S["tool"] != "upscale":
         raise ValueError("Write a prompt first")
     check_model(S)
-    if S["edit"] and not S["boxes"]:
+    if S["tool"] and not (S["src"] and Path(S["src"]).exists()):
+        raise ValueError("Pick or upload an image first")
+    if S["tool"] == "area" and not S["boxes"]:
         raise ValueError("Drag on the image to mark the area to change first")
 
 
@@ -283,7 +304,7 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
         m = MODES[kind][S["mode"]]
         steps, cfg, sampler = (S["steps"], S["cfg"], S["sampler"]) if S["use_adv"] else \
             (m["steps"], m["cfg"], m.get("sampler", S["sampler"]))
-        loras = [(lora_path(n), float(w)) for n, w in S["loras"] if n and w]
+        loras = [(lora_path(n), max(-1.0, min(2.0, float(w)))) for n, w in S["loras"] if n and w]  # -1..2
         loras = [(p, w) for p, w in loras if p]
         if kind == "sdxl" and m.get("lora"):
             task.set_stage("Getting the Fast mode LoRA")
@@ -294,16 +315,28 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
         if kind == "sdxl" and "pony" in (eng.model_path or "").lower():
             full, neg = f"{PONY_TAGS}, {full}", f"{PONY_NEG}, {neg}"
         w, h = ASPECTS[S["aspect"]]
+        tool = S["tool"]
         image = mask = None
-        if S["edit"] and S["edit_src"]:
-            image = Image.open(S["edit_src"]).convert("RGB")
-            mask = _mask(image.size, S["boxes"])
+        strength = {"area": S["strength"], "whole": S["whole_strength"], "upscale": S["up_strength"]}.get(tool, 0.75)
+        if tool:
+            image = Image.open(S["src"]).convert("RGB")
+            w, h = image.size
+            if tool == "area":
+                mask = _mask(image.size, S["boxes"])
+            # image-to-image runs only steps x strength of the schedule: keep at least 4 real steps
+            steps = max(int(steps), math.ceil(4 / max(strength, 0.05)))
         job = Job(prompt=full, negative=neg, steps=int(steps), cfg=float(cfg), sampler=sampler, width=w, height=h,
-                  seed=int(S["seed"]), count=int(S["count"]), clip_skip=int(S["clip_skip"]), loras=loras,
-                  image=image, mask=mask, strength=float(S["strength"]), on_step=task.step)
-        task.set_stage("Changing the area" if image else "Generating")
+                  seed=int(S["seed"]), count=1 if tool else int(S["count"]), clip_skip=int(S["clip_skip"]),
+                  loras=loras, image=image, mask=mask, strength=float(strength), on_step=task.step)
         t0 = time.time()
-        imgs, seed, info = eng.generate(job)
+        if tool == "upscale":
+            task.set_stage(f"Upscaling {S['up_scale']:g}x")
+            big, seed, info = eng.upscale(job, float(S["up_scale"]), on_tile=task.step)
+            imgs = [big]
+            w, h = big.size
+        else:
+            task.set_stage({"area": "Changing the area", "whole": "Changing the image"}.get(tool, "Generating"))
+            imgs, seed, info = eng.generate(job)
     finally:
         gpu_lock.release()
     meta = {"prompt_raw": prompt, "prompt": full, "negative_raw": S["negative"], "negative": neg, "style": S["style"],
@@ -311,7 +344,8 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
             "aspect": S["aspect"], "size": [w, h], "seed": seed, "count": job.count,
             "loras": [[n, float(x)] for n, x in S["loras"] if n and x],
             "kind": S["kind"], "sdxl_model": S["sdxl_model"], "vae": S["vae"], "z_model": S["z_model"],
-            "z_te": S["z_te"], "z_quant": S["z_quant"], "inpaint": bool(image), "strength": job.strength,
+            "z_te": S["z_te"], "z_quant": S["z_quant"], "tool": tool, "source": S["src"] if tool else None,
+            "strength": job.strength, "scale": S["up_scale"] if tool == "upscale" else None,
             "seconds": round(time.time() - t0, 1), "made": time.strftime("%Y-%m-%d %H:%M:%S")}
     day = OUTPUTS / time.strftime("%Y-%m-%d")
     day.mkdir(parents=True, exist_ok=True)
@@ -337,8 +371,57 @@ def reuse(S, meta: dict) -> list[str]:
         S["negative"] = meta["negative_raw"]
     S["loras"] = [list(x) for x in meta.get("loras", [])]
     S["use_adv"] = True  # same steps/cfg/sampler as recorded
-    S["count"], S["edit"] = 1, False
+    S["count"], S["tool"] = 1, None
     return [n for n, _ in S["loras"] if n not in lora_names()]
+
+
+def save_upload(data: bytes, name: str) -> str:
+    """An uploaded photo joins the outputs (and History) as a PNG, so the tools can work on it."""
+    import io
+    day = OUTPUTS / time.strftime("%Y-%m-%d")
+    day.mkdir(parents=True, exist_ok=True)
+    stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in Path(name).stem)[:40] or "image"
+    p = day / f"{time.strftime('%H%M%S')}_upload_{stem}.png"
+    from PIL import ImageOps
+    ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB").save(p)
+    history.save(p, {"uploaded": True, "name": name, "prompt_raw": "", "made": time.strftime("%Y-%m-%d %H:%M:%S"),
+                     "size": list(Image.open(p).size)})
+    return str(p)
+
+
+SHRED = {
+    "images": ("Generated and uploaded images (History)", ["outputs", "thumbs", "compare"]),
+    "loras": ("LoRAs, downloaded and trained", ["loras", "runs"]),
+    "models": ("Checkpoints and Z-Image models", ["models"]),
+    "datasets": ("Datasets (photos and captions)", ["datasets", "uploads"]),
+    "cache": ("Download cache (downloads again when needed)", []),
+}
+
+
+def shred_sizes() -> dict[str, float]:
+    from ..resources import HF_CACHE, _dir_gb
+    return {k: sum(_dir_gb(WORK / d) for d in dirs) + (_dir_gb(HF_CACHE) if k == "cache" else 0)
+            for k, (_, dirs) in SHRED.items()}
+
+
+def shred(kinds: list[str]) -> float:
+    """Delete everything of the picked kinds from the VM; returns GB freed. Unloads the model first."""
+    import shutil
+    from ..resources import HF_CACHE
+    if jm.gpu_busy() or busy_task():
+        raise ValueError("Wait until nothing is running, then try again")
+    sizes = shred_sizes()
+    with gpu_lock:
+        eng.unload()
+    for k in kinds:
+        for d in SHRED[k][1]:
+            shutil.rmtree(WORK / d, ignore_errors=True)
+            (WORK / d).mkdir(parents=True, exist_ok=True)
+        if k == "cache":
+            shutil.rmtree(HF_CACHE / "hub", ignore_errors=True)
+            shutil.rmtree(HF_CACHE / "xet", ignore_errors=True)
+    log.info(f"deleted from the VM: {', '.join(kinds)}")
+    return sum(sizes[k] for k in kinds)
 
 
 # ---------- jobs (child processes) ----------
@@ -463,7 +546,9 @@ def job_error(j) -> str:
 
 
 def job_last_line(j) -> str:
-    """What a running job printed last (downloads and caching print no step counter)."""
+    """What a running job is doing: downloading (disk filling fast), or the last line it printed."""
+    if DISK["rate"] > 2**20:
+        return f"downloading model files, {DISK['rate'] / 2**20:.0f} MB/s (only the first time)"
     for l in reversed(j.log):
         if l.strip():
             return l.strip()[-120:]

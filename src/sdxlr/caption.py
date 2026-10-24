@@ -166,6 +166,7 @@ def main() -> None:
     model_id = MODELS.get(a.model, a.model)
     dtype = _dtype()
     t0 = time.time()
+    print(f"loading the captioner {model_id} (the first time this downloads it)", flush=True)
     if "tagger" in model_id:
         cap = WD(model_id, dtype, a.threshold)
     else:

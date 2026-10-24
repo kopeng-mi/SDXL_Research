@@ -9,7 +9,7 @@ from nicegui import ui
 from ... import presets, resources, settings
 from ...engine import FP16_VAE, Z_REPO
 from ...fetch import LORAS, MODELS, ZIMAGE, add_file, fetch_loras, list_loras, list_models, list_zimage
-from ..core import UPLOADS, eng, err, jm, size_text
+from ..core import SHRED, UPLOADS, eng, err, jm, shred, shred_sizes, size_text
 from ..theme import JobLine, button, confirm, labeled, main_button, seg, title
 
 KINDS = {"LoRA": "loras", "SDXL checkpoint": "model", "Z-Image model": "zimage"}
@@ -88,7 +88,53 @@ def page(S):
                 button("Free disk space", lambda: free(), icon="cleaning_services")
             ui.label("Free disk space deletes cached downloads that are not in use; they download again when needed.") \
                 .classes("hint")
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.space()
+                button("Download all LoRAs as a zip", lambda: download_loras(), icon="folder_zip")
+                button("Delete everything…", lambda: shred_dialog(), icon="delete_forever", kind="bad")
             table = ui.column().classes("w-full gap-0")
+
+    def download_loras():
+        import zipfile
+        ls = list_loras()
+        if not ls:
+            ui.notify("There are no LoRAs yet", type="warning")
+            return
+        out = UPLOADS / "loras.zip"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:  # safetensors do not compress
+            for p in ls:
+                z.write(p, p.name)
+        ui.download.file(out)
+
+    def shred_dialog():
+        sizes = shred_sizes()
+        picks = {}
+        with ui.dialog() as d, ui.card().classes("panel").style("width:460px"):
+            ui.label("Delete from this VM").classes("t-head")
+            ui.label("Pick what to delete. This cannot be undone; files in your HF repos are not touched.") \
+                .classes("t-small")
+            for k, (label, _) in SHRED.items():
+                picks[k] = ui.checkbox(f"{label}, {sizes[k]:.1f} GB")
+            ui.label("Deleting unloads the image model first.").classes("hint")
+
+            def go():
+                ks = [k for k, c in picks.items() if c.value]
+                if not ks:
+                    ui.notify("Tick at least one", type="warning")
+                    return
+                try:
+                    gb = shred(ks)
+                    d.close()
+                    ui.notify(f"Deleted, {gb:.1f} GB freed", type="positive")
+                    draw()
+                except ValueError as e:
+                    ui.notify(str(e), type="warning")
+
+            with ui.row().classes("w-full justify-end gap-2"):
+                button("Keep everything", d.close)
+                button("Delete the ticked items", go, kind="bad")
+        d.open()
 
     def free():
         gb = resources.clear_download_cache([eng.model_path or "", Z_REPO, FP16_VAE])
@@ -118,6 +164,8 @@ def page(S):
                     ui.label(p.name).classes("grow").style("overflow-wrap:anywhere")
                     ui.label(kind).classes("t-small muted").style("width:120px")
                     ui.label(size_text(p.stat().st_size)).classes("t-small muted tnum text-right").style("width:80px")
+                    ui.button(icon="download", on_click=lambda p=p: ui.download.file(p)) \
+                        .props("flat dense round size=sm").tooltip("Download to this computer")
                     ui.button(icon="delete_outline", on_click=lambda p=p: confirm(
                         f"Delete {p.name} from this VM?", "Delete", lambda: delete(p))) \
                         .props("flat dense round size=sm").tooltip("Delete")

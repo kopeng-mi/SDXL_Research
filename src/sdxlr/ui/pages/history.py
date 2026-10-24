@@ -35,6 +35,16 @@ def page(S):
             with ui.row().classes("w-full no-wrap gap-5 two-col"):
                 ui.image(url(p)).props("fit=contain no-transition no-spinner").style("width:55%; max-height:75vh")
                 with ui.column().classes("gap-2").style("flex:1 1 0"):
+                    if m.get("uploaded"):
+                        ui.label(f"Uploaded: {m.get('name', p.name)}").classes("t-head")
+                        ui.label(f"{'x'.join(map(str, m.get('size', [])))}, added {m.get('made', '')}").classes("t-small muted")
+                        with ui.row().classes("gap-2 pt-3"):
+                            ui.button("Open in Generate", on_click=lambda: open_in_generate(p, d)) \
+                                .props("unelevated no-caps color=grey-3 text-color=grey-10").classes("btn-main") \
+                                .style("width:auto; padding:0 18px")
+                            button("Download the image", lambda: ui.download.file(p), icon="download")
+                        d.open()
+                        return
                     ui.label(m.get("prompt_raw") or m.get("prompt", "")).classes("t-head").style("line-height:1.35")
                     model = m.get("z_model") if m.get("kind") == "Z-Image" else m.get("sdxl_model")
                     rows = [("Model", f"{m.get('kind')} {model}"), ("Mode", m.get("mode")),
@@ -42,8 +52,10 @@ def page(S):
                             ("Size", "x".join(map(str, m.get("size", [])))),
                             ("LoRAs", ", ".join(f"{n} at {w:.2f}" for n, w in m.get("loras", [])) or "None"),
                             ("Made", f"{m.get('made', '')}, took {m.get('seconds', '?')} s")]
-                    if m.get("inpaint"):
-                        rows.append(("Area change", f"strength {m.get('strength')}"))
+                    if m.get("tool"):
+                        what = {"area": "Changed an area", "whole": "Changed the whole image",
+                                "upscale": f"Upscaled {m.get('scale')}x"}.get(m["tool"], m["tool"])
+                        rows.append(("Made by", f"{what}, strength {m.get('strength')}"))
                     for k, v in rows:
                         with ui.row().classes("no-wrap gap-2 t-small"):
                             ui.label(k).classes("muted").style("width:90px")
@@ -54,6 +66,11 @@ def page(S):
                         button("Download the image", lambda: ui.download.file(p), icon="download")
                         button("Download the settings", lambda: ui.download.file(p.with_suffix(".json")), icon="data_object")
         d.open()
+
+    def open_in_generate(p, d):
+        S.update(image=str(p), tool=None, boxes=[])
+        d.close()
+        ui.navigate.to("/")
 
     def make_again(m, d):
         missing = reuse(S, m)
@@ -75,7 +92,8 @@ def page(S):
             for p, m in items:
                 with ui.column().classes("tile gap-1"):
                     ui.image(thumb(p)).props("no-transition no-spinner").on("click", lambda p=p, m=m: show(p, m))
-                    ui.label((m.get("prompt_raw") or m.get("prompt", ""))[:70]).classes("t-small muted") \
+                    ui.label(("Uploaded: " + m.get("name", "")) if m.get("uploaded")
+                             else (m.get("prompt_raw") or m.get("prompt", ""))[:70]).classes("t-small muted") \
                         .style("line-height:1.3; height:34px; overflow:hidden")
 
     def tick():
