@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from nicegui import ui
 
+from ...service import files
 from ..core import WORK, err, lora_names, model_names, submit_compare, url, z_names
 from ..theme import JobLine, labeled, main_button, seg, title
 
@@ -54,14 +55,14 @@ def page(S):
     seen = {"m": "x"}
 
     def tick():
-        p = WORK / "compare" / (S["c_name"].strip() or "grid") / "grid.png"
-        m = p.stat().st_mtime if p.exists() else None
+        name = S["c_name"].strip() or "grid"
+        m = files.grid_mtime(name)
         if m != seen["m"]:
             seen["m"] = m
             box.clear()
             with box:
                 if m:
-                    ui.image(url(p)).classes("w-full").props("fit=contain no-transition no-spinner")
+                    ui.image(url(WORK / "compare" / name / "grid.png")).classes("w-full").props("fit=contain no-transition no-spinner")
                 else:
                     with ui.column().classes("items-center gap-1"):
                         ui.label(f"No grid named \"{S['c_name']}\" yet").classes("muted")

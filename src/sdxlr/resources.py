@@ -79,9 +79,11 @@ def _dir_gb(p: Path) -> float:
     return sum(f.stat().st_size for f in p.rglob("*") if f.is_file() and not f.is_symlink()) / GB
 
 
-def estimate(kind: str, sdxl_path: str | None, z_path: str | None, te_quant: str) -> tuple[str, float] | None:
+def estimate(kind: str, sdxl_path: str | None, z_path: str | None, te_quant: str,
+             z_gb: float | None = None) -> tuple[str, float] | None:
+    """z_gb: the transformer's size when the caller knows it (no disk access here, this runs in a timer)."""
     if kind == "Z-Image":
-        size = Path(z_path).stat().st_size / GB if z_path and Path(z_path).exists() else 7.2  # Q8 default
+        size = z_gb or (Path(z_path).stat().st_size / GB if z_path and Path(z_path).exists() else 7.2)  # Q8 default
         return "Z-Image (to load)", size + TE_GB.get(te_quant, 2.5) + Z_EXTRA_GB
     if sdxl_path:
         return "SDXL (to load)", SDXL_GB

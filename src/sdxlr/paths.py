@@ -30,6 +30,7 @@ UPLOADS = WORK / "uploads"
 THUMBS = WORK / "thumbs"
 RUNS = WORK / "runs"
 LOGS = WORK / "logs"
+COMPARE = WORK / "compare"
 RUN = WORK / "run"  # pidfiles: the engine worker and job processes
 SESS = WORK / "sessions"
 WEIGHTS = {".safetensors", ".gguf", ".ckpt"}

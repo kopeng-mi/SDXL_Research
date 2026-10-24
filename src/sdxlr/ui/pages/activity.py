@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from nicegui import ui
+from nicegui import run, ui
 
 from ...activity import LOGS, act
 from ..core import OPEN_JOB, jm, job_error, logs_zip
@@ -80,24 +80,29 @@ def page(S):
         sig["v"] = None
         draw()
 
-    def tail():
+    def read_new(f) -> list[str]:
+        """New log lines since the last read (disk access: runs in a thread)."""
+        if pos["file"] != f:
+            pos.update(file=f, off=max(f.stat().st_size - 60000, 0) if f.exists() else 0)
+        if not f.exists() or f.stat().st_size <= pos["off"]:
+            return []
+        with open(f, "rb") as fh:
+            fh.seek(pos["off"])
+            data = fh.read()
+        pos["off"] += len(data)
+        return data.decode("utf-8", "replace").splitlines()
+
+    async def tail():
         j = jm.jobs.get(sel["job"]) if sel["job"] else None
         f = LOGS / "jobs" / f"{sel['job']}.log" if j else LOGS / "app.log"
         cancel.set_visibility(bool(j) and j.status in ("running", "queued"))
         back.set_visibility(bool(j))
-        if pos["file"] != f:
-            pos.update(file=f, off=max(f.stat().st_size - 60000, 0) if f.exists() else 0)
-        if f.exists() and f.stat().st_size > pos["off"]:
-            with open(f, "rb") as fh:
-                fh.seek(pos["off"])
-                data = fh.read()
-            pos["off"] += len(data)
-            for line in data.decode("utf-8", "replace").splitlines():
-                logv.push(line)
+        for line in await run.io_bound(read_new, f):
+            logv.push(line)
 
     if sel["job"]:
         log_title.text = jm.jobs[sel["job"]].title
     draw()
-    tail()
+    ui.timer(0.1, tail, once=True)
     ui.timer(2.0, draw)
     ui.timer(1.0, tail)

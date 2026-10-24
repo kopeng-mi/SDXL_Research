@@ -23,6 +23,7 @@ from ..activity import LOGS, log
 from ..engine import SAMPLERS, Z_ENCODERS, Z_MODELS  # noqa: F401  (SAMPLERS used by pages)
 from ..modes import ASPECTS, STYLES, train_eta  # noqa: F401  (ASPECTS/STYLES used by pages)
 from ..paths import DATASETS, MODELS, OUTPUTS, SDXL_BASE, UPLOADS, WORK  # noqa: F401  (UPLOADS/DATASETS: pages)
+from ..service import files
 from ..service.files import (datasets, images, lora_names, lora_path, model_names, model_path, poke, thumb, url,  # noqa: F401
                              z_names, z_path)
 from ..service.gen import (TOOL_LABEL, busy_task, check_generate, check_model, engc, generate_blocking,  # noqa: F401
@@ -274,9 +275,7 @@ def estimate_preview(S):
     if is_loaded(S):
         return None
     if S["kind"] == "Z-Image":
-        zp = z_path(S["z_model"])
-        local = MODELS / "zimage" / Path(zp).name if zp in Z_MODELS.values() else Path(zp)
-        return resources.estimate("Z-Image", None, str(local), S["z_quant"])
+        return resources.estimate("Z-Image", None, None, S["z_quant"], z_gb=files.z_size_gb(S["z_model"]) or 7.2)
     return resources.estimate("SDXL", model_path(S["sdxl_model"]), None, S["z_quant"]) if S["sdxl_model"] else None
 
 

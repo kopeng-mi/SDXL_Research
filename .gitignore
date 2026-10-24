@@ -37,3 +37,7 @@ __pycache__/
 venv/
 .pytest_cache/
 .ruff_cache/
+
+# local runs (session JSON with prompts, outputs)
+/work/
+/work_*/

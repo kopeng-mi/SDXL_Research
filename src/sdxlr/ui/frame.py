@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import secrets
 import threading
+from pathlib import Path
 
 from nicegui import app, ui
 
@@ -211,8 +212,11 @@ def main() -> None:
     threading.Thread(target=core.sample_usage_loop, daemon=True).start()
     from ..service import files as _files
     _files.start_refresh()  # cached listings for every timer (first scan synchronous)
-    app.add_media_files("/work", core.WORK)
-    secret_f = core.WORK / ".ui_secret"
+    for d in _files.SERVED:  # only what the pages show: not sessions, logs, datasets, models
+        (core.WORK / d).mkdir(parents=True, exist_ok=True)
+        app.add_media_files(f"/work/{d}", core.WORK / d)
+    secret_f = Path.home() / ".sdxlr_ui_secret"  # outside WORK, which is browsable and gets shredded/copied
+    (core.WORK / ".ui_secret").unlink(missing_ok=True)  # the old location
     if not secret_f.exists():
         secret_f.write_text(secrets.token_hex(16))
 

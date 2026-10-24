@@ -18,6 +18,7 @@ from dataclasses import field
 from nicegui import binding
 
 from .. import session
+from ..activity import log
 
 
 @binding.bindable_dataclass
@@ -136,7 +137,11 @@ def autosave_loop() -> None:
     while True:
         time.sleep(5)
         for code, s in list(STATES.items()):
-            blob = json.dumps(s.as_dict(), default=str, sort_keys=True)
-            if _saved.get(code) != blob:
-                session.save(code, s.as_dict())
-                _saved[code] = blob
+            try:
+                d = s.as_dict()  # may race with the page changing a list: the next pass gets it
+                blob = json.dumps(d, default=str, sort_keys=True)
+                if _saved.get(code) != blob:
+                    session.save(code, d)
+                    _saved[code] = blob
+            except Exception as e:
+                log.info(f"autosave of session {code} failed: {type(e).__name__}: {e}")

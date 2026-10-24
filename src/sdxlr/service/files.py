@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .. import history
 from ..fetch import list_loras, list_models, list_zimage
-from ..paths import DATASETS, LORAS, MODELS, OUTPUTS, RUNS, THUMBS, WORK, Z_MODELS, ZIMAGE
+from ..paths import COMPARE, DATASETS, LORAS, MODELS, OUTPUTS, RUNS, THUMBS, WORK, Z_MODELS, ZIMAGE
 
 IMG = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 REFRESH_SECS = 2.5
@@ -97,6 +97,19 @@ def z_path(name: str) -> str:
     _ensure()
     with _lock:
         return Z_MODELS.get(name) or next((str(p) for p in _cache["zimage"] if p.name == name), name)
+
+
+def z_size_gb(name: str) -> float | None:
+    """File size of a Z-Image model in GB, from the cache (None when unknown)."""
+    from ..paths import Z_SIZES_GB
+    with _lock:
+        return Z_SIZES_GB.get(name) or _cache.get("zsizes", {}).get(name)
+
+
+def grid_mtime(name: str) -> float | None:
+    """Modified time of a Compare grid image, from the cache."""
+    with _lock:
+        return _cache.get("grids", {}).get(name)
 
 
 def datasets() -> list[str]:
@@ -196,10 +209,11 @@ def _mtime(p: Path) -> float:
 
 def _signature() -> tuple:
     """Directory mtimes that change when a file is added or removed (one stat each, no listing of files)."""
-    dirs = [OUTPUTS, LORAS, RUNS, MODELS, MODELS / "zimage", ZIMAGE, DATASETS]
+    dirs = [OUTPUTS, LORAS, RUNS, MODELS, MODELS / "zimage", ZIMAGE, DATASETS, COMPARE]
     try:
         dirs += sorted((d for d in OUTPUTS.iterdir() if d.is_dir()), reverse=True)[:3]  # the newest day folders
-        dirs += [d for d in RUNS.iterdir() if d.is_dir()] + [d for d in DATASETS.iterdir() if d.is_dir()]
+        dirs += [d for d in RUNS.iterdir() if d.is_dir()] + [d for d in DATASETS.iterdir() if d.is_dir()] \
+            + [d for d in COMPARE.iterdir() if d.is_dir()]
     except OSError:
         pass
     return tuple((str(d), _mtime(d)) for d in dirs)
@@ -233,6 +247,9 @@ def _refresh(force: bool = False) -> None:
                     except OSError:
                         pass
             caps[d.name] = (len(imgs), n)
+    zsizes = {q.name: q.stat().st_size / 2**30 for q in zimage if q.exists()}
+    grids = {d.name: (d / "grid.png").stat().st_mtime for d in COMPARE.iterdir() if (d / "grid.png").exists()} \
+        if COMPARE.exists() else {}
     seen, prompts = set(), []
     for _, m in his:
         p = m.get("prompt_raw") or m.get("prompt", "")
@@ -243,7 +260,7 @@ def _refresh(force: bool = False) -> None:
             break
     with _lock:
         _cache.update(history=his, prompts=prompts, loras=loras, models=models, zimage=zimage,
-                      datasets=sorted(ds), ds=ds, caps=caps, cap_text=cap_text)
+                      datasets=sorted(ds), ds=ds, caps=caps, cap_text=cap_text, zsizes=zsizes, grids=grids)
         pending = list(_want)
         _want.clear()
     # thumbs for every listed image, newest first, made here and not on the event loop
