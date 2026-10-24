@@ -6,8 +6,8 @@
 Steps (each a real app job: the same child processes, logs and pidfiles as the UI):
   import   photos -> dataset "me" (dedupe check) and a copy "me_wd"
   caption  WD tags on "me_wd", Qwen identity captions on "me" (the one trained on)
-  sdxl     SDXL LoRA on "me" (11 photos x 6 repeats x 15 epochs / batch 3)
-  zbase    Z-Image LoRA on Base, 512 px (x 4 repeats x 10 epochs)
+  sdxl     SDXL LoRA on "me" (11 photos x 6 repeats / batch 3 per epoch; --epochs, default 1 = a smoke run)
+  zbase    Z-Image LoRA on Base, 512 px (x 4 repeats per epoch)
   zturbo   Z-Image LoRA on Turbo + ostris's training adapter (same settings): the A/B
   compare  grids: each LoRA's last epochs x strengths, same seed
   inpaint  the face of one photo repainted with each Z-Image LoRA (trigger in the prompt)
@@ -100,6 +100,7 @@ def main() -> None:
     ap.add_argument("--skip", default="")
     ap.add_argument("--trigger", default="ohwx_person")
     ap.add_argument("--class-word", default="woman")
+    ap.add_argument("--epochs", type=int, default=1, help="1 = does every trainer run (minutes); 15/10 = the real run")
     a = ap.parse_args()
     skip = set(a.skip.split(","))
     guard.start(engc, jm)
@@ -121,15 +122,15 @@ def main() -> None:
         tw = ["--trigger", a.trigger, "--class-word", a.class_word]
         if "sdxl" not in skip:
             submit("train", "train SDXL", ["-m", "sdxlr.train", "--name", "me_sdxl", "--images", me,
-                                           "--model", SDXL_BASE, "--set", "epochs=15", "repeats=6", "batch_size=3",
+                                           "--model", SDXL_BASE, "--set", f"epochs={a.epochs}", "repeats=6", "batch_size=3",
                                            *tw])
         if "zbase" not in skip:
             submit("train", "train Z-Image (Base)", ["-m", "sdxlr.train_zimage", "--name", "me_zbase", "--images", me,
-                                                     "--set", "epochs=10", "repeats=4", *tw])
+                                                     "--set", f"epochs={a.epochs}", "repeats=4", *tw])
         if "zturbo" not in skip:
             submit("train", "train Z-Image (Turbo + ostris adapter)",
                    ["-m", "sdxlr.train_zimage", "--name", "me_zturbo", "--images", me,
-                    "--set", "epochs=10", "repeats=4", "dit=turbo", "adapter=ostris", *tw])
+                    "--set", f"epochs={a.epochs}", "repeats=4", "dit=turbo", "adapter=ostris", *tw])
         files._refresh(force=True)
         prompt = f"{a.trigger}, {a.class_word}, portrait photo, natural light, looking at the camera"
         if "compare" not in skip:
