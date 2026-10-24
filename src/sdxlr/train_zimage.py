@@ -10,8 +10,9 @@ T4 plan (15 GB VRAM, 12.7 GB RAM, no bf16/fp8 compute):
   3. convert every saved LoRA to diffusers format (*_diffusers.safetensors),
      which the app/compare load on top of Z-Image Turbo
 
-Resume (simple): with --hf-repo, LoRAs + training state are uploaded to that
-private repo each epoch. --resume downloads the newest state and trains the
+Auto resume: with --hf-repo and --resume, the dataset and the latest LoRA +
+state go to that private repo (hfsync.py keeps only the newest checkpoint);
+a later run with the same name restores the dataset if missing and trains the
 remaining epochs. musubi restarts its epoch counter on resume, so a resumed
 run is named NAME_rDONE and its files are renumbered to the real epoch.
 """
@@ -28,6 +29,7 @@ from pathlib import Path
 import toml
 import yaml
 
+from . import hfsync
 from .fetch import MODELS, WORK, fetch
 
 REPO = Path(__file__).resolve().parents[2]
@@ -58,22 +60,6 @@ def _run(script: str, *args: str) -> None:
         sys.exit(f"{script} failed with exit code {rc}")
 
 
-def _done(state: str, name: str) -> int:
-    """Epochs finished by a state dir: NAME-000003-state or NAME_r3-000002-state."""
-    m = re.fullmatch(rf"{re.escape(name)}(?:_r(\d+))?-(\d+)-state", state)
-    return int(m[1] or 0) + int(m[2]) if m else -1
-
-
-def latest_state(hf_repo: str, name: str, dst: Path) -> tuple[Path, int] | None:
-    from huggingface_hub import HfApi, snapshot_download
-    states = {f.split("/")[0] for f in HfApi().list_repo_files(hf_repo) if "-state/" in f}
-    best = max(states, key=lambda s: _done(s, name), default=None)
-    if best is None or _done(best, name) < 0:
-        return None
-    snapshot_download(hf_repo, allow_patterns=[f"{best}/*"], local_dir=dst)
-    return dst / best, _done(best, name)
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
@@ -85,6 +71,8 @@ def main() -> None:
     a = ap.parse_args()
     if a.resume and not a.hf_repo:
         sys.exit("--resume needs --hf-repo")
+    if a.resume and not any(a.images.glob("*")) and not hfsync.pull_dataset(a.hf_repo, a.name, a.images):
+        sys.exit(f"no images in {a.images} and none in {a.hf_repo}/{a.name}/dataset")
 
     c = yaml.safe_load((PRESETS / f"{a.preset}.yaml").read_text())
     c |= {k: _cast(v) for k, v in (s.split("=", 1) for s in a.set)}
@@ -94,7 +82,7 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     done, state, run_name = 0, None, a.name
     if a.resume:
-        found = latest_state(a.hf_repo, a.name, out / "resume")
+        found = hfsync.pull_latest(a.hf_repo, a.name, out / "resume")
         if found:
             state, done = found
             run_name = f"{a.name}_r{done}"
@@ -134,17 +122,21 @@ def main() -> None:
         "--seed", str(c["seed"]), "--max_data_loader_n_workers", "1", "--persistent_data_loader_workers",
         "--output_dir", str(out), "--output_name", run_name,
     ]
-    if a.hf_repo:
-        args += ["--save_state", "--save_last_n_epochs_state", "1", "--huggingface_repo_id", a.hf_repo,
-                 "--huggingface_repo_type", "model", "--huggingface_repo_visibility", "private",
-                 "--save_state_to_huggingface", "--async_upload"]
-    if state:
-        args += [f"--resume={state}"]
     if c["fp8"]:
         args += ["--fp8_base", "--fp8_scaled"]  # fp8 storage only; T4 computes in fp16
     if c.get("blocks_to_swap"):
         args += ["--blocks_to_swap", str(c["blocks_to_swap"])]  # uses system RAM (only 12.7 GB on Colab)
+    pusher = None
+    if a.resume:
+        args += ["--save_state", "--save_last_n_epochs_state", "1"]
+        if state:
+            args += [f"--resume={state}"]
+        hfsync.push_dataset(a.hf_repo, a.name, a.images)
+        pusher = hfsync.Pusher(a.hf_repo, out, a.name)
+        pusher.start()
     _run("zimage_train_network.py", *args)
+    if pusher:
+        pusher.stop_ev.set()  # final push after renaming + conversion
 
     if run_name != a.name:  # renumber a resumed run to the real epoch: NAME_r3-000002 -> NAME-000005
         for f in out.glob(f"{run_name}*.safetensors"):
@@ -159,6 +151,8 @@ def main() -> None:
         if not dst.exists():
             _run("convert_lora.py", "--input", str(lora), "--output", str(dst), "--target", "other")
     print(f"LoRAs in {out}: {sorted(p.name for p in out.glob('*_diffusers.safetensors'))}", flush=True)
+    if pusher:
+        pusher.finish()
 
 
 if __name__ == "__main__":

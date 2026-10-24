@@ -5,8 +5,9 @@
 Defaults come from configs/train/sdxl_person.yaml (proven T4 settings).
 Training runs as a child process; when it exits all VRAM/RAM is released.
 
-Resume (simple): with --hf-repo, kohya uploads LoRAs + state dirs to that
-private repo each epoch. --resume downloads the newest state dir and continues.
+Auto resume: with --hf-repo and --resume, the dataset and the latest LoRA +
+state go to that private repo (hfsync.py keeps only the newest checkpoint);
+a later run with the same name restores the dataset if missing and continues.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from pathlib import Path
 import toml
 import yaml
 
+from . import hfsync
 from .fetch import MODELS, fetch
 
 REPO = Path(__file__).resolve().parents[2]
@@ -36,16 +38,6 @@ def _cast(v: str):
         except ValueError:
             pass
     return {"true": True, "false": False, "none": None}.get(v.lower(), v)
-
-
-def latest_state(hf_repo: str, name: str, dst: Path) -> Path | None:
-    from huggingface_hub import HfApi, snapshot_download
-    states = sorted({f.split("/")[0] for f in HfApi().list_repo_files(hf_repo)
-                     if f.startswith(f"{name}-") and "-state/" in f})
-    if not states:
-        return None
-    snapshot_download(hf_repo, allow_patterns=[f"{states[-1]}/*"], local_dir=dst)
-    return dst / states[-1]
 
 
 def build_configs(c: dict, model: Path, images: Path, out: Path) -> tuple[Path, Path]:
@@ -105,14 +97,6 @@ def build_configs(c: dict, model: Path, images: Path, out: Path) -> tuple[Path, 
             "logging_dir": str(out / "logs"),
         },
     }
-    if c.get("hf_repo"):
-        train["saving_arguments"] |= {
-            "huggingface_repo_id": c["hf_repo"],
-            "huggingface_repo_type": "model",
-            "huggingface_repo_visibility": "private",
-            "save_state_to_huggingface": True,
-            "async_upload": True,
-        }
     for sec in train.values():
         for k in [k for k, v in sec.items() if v is None]:
             del sec[k]
@@ -154,6 +138,10 @@ def main() -> None:
     if a.model:
         c["model"] = a.model
 
+    if a.resume and not c["hf_repo"]:
+        sys.exit("--resume needs --hf-repo")
+    if a.resume and not any(a.images.glob("*")) and not hfsync.pull_dataset(c["hf_repo"], a.name, a.images):
+        sys.exit(f"no images in {a.images} and none in {c['hf_repo']}/{a.name}/dataset")
     caps = list(a.images.glob("*.txt"))
     imgs = [p for p in a.images.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}]
     if not imgs:
@@ -167,17 +155,21 @@ def main() -> None:
 
     cmd = [sys.executable, "-u", str(KOHYA / "sdxl_train_network.py"),
            f"--config_file={cfg}", f"--dataset_config={ds}"]
+    pusher = None
     if a.resume:
-        if not c["hf_repo"]:
-            sys.exit("--resume needs --hf-repo")
-        state = latest_state(c["hf_repo"], a.name, out / "resume")
-        print(f"resume from {state}" if state else "no state found, starting fresh", flush=True)
-        if state:
-            cmd.append(f"--resume={state}")
+        found = hfsync.pull_latest(c["hf_repo"], a.name, out / "resume")
+        print(f"resume from {found[0]} ({found[1]} epochs done)" if found else "no saved state, starting fresh", flush=True)
+        if found:
+            cmd.append(f"--resume={found[0]}")
+        hfsync.push_dataset(c["hf_repo"], a.name, a.images)
+        pusher = hfsync.Pusher(c["hf_repo"], out, a.name)
+        pusher.start()
 
     shutil.copy(cfg, out / "train.used.toml")
     print(" ".join(cmd), flush=True)
     rc = subprocess.run(cmd, cwd=KOHYA, env={**os.environ, "PYTHONUNBUFFERED": "1"}).returncode
+    if pusher:
+        pusher.finish()
     print(f"LoRAs in {out}: {sorted(p.name for p in out.glob('*.safetensors'))}", flush=True)
     sys.exit(rc)
 

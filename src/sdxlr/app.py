@@ -293,10 +293,10 @@ def train_estimate(kind, ds, repeats, epochs, batch, res):
 
 
 def run_train(kind, ds, name, sdxl_base, repeats, epochs, batch, res, dim, lr, te_lr, lora_type, hf_repo, resume):
-    if not ds or not _images(ds):
+    if not ds or not (_images(ds) or resume):
         raise gr.Error("Pick a dataset with images.")
     name = (name or "").strip() or ds
-    if not any(p.with_suffix(".txt").exists() for p in _images(ds)):
+    if _images(ds) and not any(p.with_suffix(".txt").exists() for p in _images(ds)):
         gr.Warning("No captions found: caption the dataset first for better results.")
     if kind == "Z-Image":
         args = ["-m", "sdxlr.train_zimage", "--name", name, "--images", DATASETS / ds, "--set",
@@ -590,7 +590,8 @@ def build() -> gr.Blocks:
                                 t_type = gr.Radio(["LoRA", "LoCon"], value="LoRA", label="Type")
                             with gr.Row():
                                 t_hf = gr.Textbox(label="Private HF repo for LoRAs + resume state", placeholder="yourname/my-loras")
-                                t_resume = gr.Checkbox(False, label="Resume from that repo")
+                                t_resume = gr.Checkbox(False, label="Auto resume",
+                                                       info="uploads the dataset + latest LoRA and state; same LoRA name later = continue")
                         t_go = gr.Button("Start training", variant="primary")
                     with gr.Column(scale=2):
                         gr.Markdown("**Tips**\n- 50-150 varied photos, captioned in the Dataset tab\n"
