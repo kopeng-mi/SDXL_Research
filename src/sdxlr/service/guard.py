@@ -93,7 +93,7 @@ def _kill_jobs_if_low(jm, mb: float) -> None:
     for j in list(jm.jobs.values()):
         if j.status == "running" and j.gpu and j.proc and j.proc.poll() is None:
             note(f"still only {mb:.0f} MB free: stopping the job \"{j.title}\" (auto resume keeps its progress)")
-            stop_tree(j.proc.pid)
+            stop_tree(j.proc.pid, grace=1.0)  # RAM is critical: do not hold this thread
             return
 
 

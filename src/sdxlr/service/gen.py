@@ -106,26 +106,34 @@ def _prefetch(task, *args) -> None:
         raise RuntimeError("download failed: " + " | ".join(tail))
 
 
+def _check_ram(kind, sdxl_path, z_transformer, te_quant) -> None:
+    """Refuse a load that cannot fit. If another model is in the worker, stop it and check again: its RAM
+    counts against the check and the load would drop it anyway (a model switch otherwise keeps torch warm)."""
+    from . import guard
+    try:
+        guard.check_ram(kind, sdxl_path, z_transformer, te_quant, engc.beat, jm)
+    except ValueError:
+        if not engc.loaded:
+            raise
+        engc.kill()
+        guard.check_ram(kind, sdxl_path, z_transformer, te_quant, engc.beat, jm)
+
+
 def _load(S, task) -> None:
     """Load the model picked in S (caller holds gpu_lock)."""
     if is_loaded(S):
         return
     check_model(S)
-    if engc.needs_prefetch and engc.loaded:  # another model is in memory: it is dropped anyway, and its RAM would count against the check
-        engc.kill()
     if S["kind"] == "Z-Image":
         tr, te = z_path(S["z_model"]), Z_ENCODERS.get(S["z_te"], S["z_te"])
-        from . import guard
-        if engc.needs_prefetch:  # the fake engine does not load real weights
-            guard.check_ram("Z-Image", None, tr, S["z_quant"], engc.beat, jm)
-        if engc.needs_prefetch:
+        if engc.needs_prefetch:  # the stub engine does not load real weights
+            _check_ram("Z-Image", None, tr, S["z_quant"])
             _prefetch(task, "prefetch-zimage", tr, te)
         engc.call("load", {"kind": "zimage", "transformer": tr, "text_encoder": te, "te_quant": S["z_quant"]}, task)
     else:
         mp = model_path(S["sdxl_model"])
-        from . import guard
         if engc.needs_prefetch:
-            guard.check_ram("SDXL", mp, None, S["z_quant"], engc.beat, jm)
+            _check_ram("SDXL", mp, None, S["z_quant"])
         if S["vae"] == "fp16fix" and engc.needs_prefetch:
             _prefetch(task, "prefetch-sdxl")
         engc.call("load", {"kind": "sdxl", "path": mp, "vae": S["vae"]}, task)
@@ -162,7 +170,7 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
     _gpu_free()
     try:
         _load(S, task)
-        kind = engc.kind
+        kind = "zimage" if S["kind"] == "Z-Image" else "sdxl"
         m = modes.MODES[kind][S["mode"]]
         steps, cfg, sampler = (S["steps"], S["cfg"], S["sampler"]) if S["use_adv"] else \
             (m["steps"], m["cfg"], m.get("sampler", S["sampler"]))
@@ -174,7 +182,7 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
         prompt = S["prompt"].strip()
         full = ", ".join(x for x in (prompt, modes.STYLES.get(S["style"], "")) if x)
         neg = S["negative"] if kind == "sdxl" else ""
-        if kind == "sdxl" and "pony" in (engc.model_path or "").lower():
+        if kind == "sdxl" and "pony" in wanted(S).lower():
             full, neg = f"{modes.PONY_TAGS}, {full}", f"{modes.PONY_NEG}, {neg}"
         w, h = modes.ASPECTS[S["aspect"]]
         tool = S["tool"]
