@@ -19,16 +19,35 @@ def save(png: Path, meta: dict) -> None:
     png.with_suffix(".json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
 
 
+_meta: dict[str, tuple[float, dict]] = {}  # json path -> (mtime, meta): only new or changed sidecars are read again
+
+
 def items(limit: int = 200) -> list[tuple[Path, dict]]:
     """Newest first: (png, meta)."""
-    out = []
-    for j in sorted(OUTPUTS.glob("*/*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+    stamped = []
+    for j in OUTPUTS.glob("*/*.json"):
+        try:
+            stamped.append((j.stat().st_mtime, j))
+        except OSError:
+            pass  # deleted while listing
+    stamped.sort(key=lambda t: t[0], reverse=True)
+    out, keep = [], set()
+    for mt, j in stamped[:limit]:
         png = j.with_suffix(".png")
-        if png.exists():
+        if not png.exists():
+            continue
+        key = str(j)
+        keep.add(key)
+        hit = _meta.get(key)
+        if hit is None or hit[0] != mt:
             try:
-                out.append((png, json.loads(j.read_text(encoding="utf-8"))))
-            except json.JSONDecodeError:
-                pass
+                hit = (mt, json.loads(j.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue  # half-written: the next pass reads it
+            _meta[key] = hit
+        out.append((png, hit[1]))
+    for key in [k for k in _meta if k not in keep]:
+        del _meta[key]
     return out
 
 

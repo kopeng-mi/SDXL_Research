@@ -20,7 +20,8 @@ from ..paths import COMPARE, DATASETS, LORAS, MODELS, OUTPUTS, RUNS, THUMBS, WOR
 
 IMG = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 REFRESH_SECS = 2.5
-FULL_RESCAN_SECS = 20.0  # rescan even when no directory changed (files edited in place)
+FULL_RESCAN_SECS = 120.0  # rescan even when no directory changed (files edited in place); 1000 outputs cost ~0.5 s
+HISTORY_MAX = 5000  # newest outputs kept in the index (History pages through them)
 SERVED = ("outputs", "thumbs", "compare", "previews")  # the only dirs under WORK the browser can fetch
 PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
 
@@ -281,7 +282,7 @@ def _refresh(force: bool = False) -> None:
     _sig[0], _sig[1] = sig, now
     for key in [k for k in _ready if not (Path(k[0]).with_suffix(".webp") if k[1] < 0 else _thumb_path(Path(k[0]), k[1])).exists()]:
         _ready.discard(key)  # thumbs and WebP copies deleted behind our back
-    his = history.items(220)
+    his = history.items(HISTORY_MAX)
     loras, models, zimage = list_loras(), list_models(), list_zimage()
     ds = {}
     caps = {}
@@ -318,7 +319,7 @@ def _refresh(force: bool = False) -> None:
         pending = list(_want)
         _want.clear()
     # thumbs for every listed image, newest first, made here and not on the event loop
-    _make_missing(pending + [(p, DISPLAY) for p, _ in his[:12]] + [(p, size) for p, _ in his for size in (160, 320)]
+    _make_missing(pending + [(p, DISPLAY) for p, _ in his[:12]] + [(p, size) for p, _ in his[:300] for size in (160, 320)]  # older ones on demand
                   + [(p, 320) for imgs in ds.values() for p in imgs])
 
 
