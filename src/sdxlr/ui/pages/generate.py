@@ -272,7 +272,8 @@ def page(S):
         with ui.expansion("Model options").classes("w-full"):
             with ui.column().classes("w-full gap-2").bind_visibility_from(S, "kind", value="Z-Image"):
                 labeled("Prompt reader (text encoder)", ui.select(
-                    {"official": "Official", "abliterated": "Uncensored (follows more prompts)"},
+                    {"official": "Official", "abliterated": "Uncensored (follows more prompts)",
+                     "unsloth": "Fast 4-bit (unsloth, being tested)"},
                     with_input=True, new_value_mode="add-unique").bind_value(S, "z_te"),
                     "The part that reads your prompt. You can also type a Hugging Face repo")
                 with ui.column().classes("gap-0"):
@@ -396,9 +397,11 @@ def page(S):
             view_box = ui.element("div").classes("w-full").style("display:flex; justify-content:center; align-items:center")
             painter_box = ui.element("div").classes("w-full")
             with ui.column().classes("overlay gap-1") as ov:
-                overlay = {"box": ov, "title": ui.label().classes("work"), "bar": ui.html("", sanitize=False).classes("w-full"),
+                overlay = {"box": ov, "preview": ui.image().classes("w-full").style("max-height:300px; object-fit:contain"),
+                           "title": ui.label().classes("work"), "bar": ui.html("", sanitize=False).classes("w-full"),
                            "detail": ui.label().classes("hint tnum")}
             ov.set_visibility(False)
+            overlay["preview"].set_visibility(False)
         with ui.row().classes("w-full items-center gap-2") as result_bar:
             ui.label("Keep this result?").classes("t-small")
             button("Keep", lambda: keep(), icon="check")
@@ -496,9 +499,9 @@ def page(S):
                 if painter["el"] is None:
                     ui.label("Preparing the image…").classes("muted")
             elif reviewing() and S["compare_on"] and pending["same_aspect"] and S["src"] and files.display_url(S["src"]):
-                BeforeAfter(files.display_url(S["src"]), files.display_url(img) or url(img))
+                BeforeAfter(files.display_url(S["src"]), files.view_url(img) or url(img))
             else:
-                u = files.display_url(img)
+                u = files.view_url(img)
                 if u is None:
                     shown["need"] = shown["need"] or img
                 ui.image(u or url(img)).classes("w-full").props("fit=contain no-transition")
@@ -634,6 +637,10 @@ def page(S):
                 if overlay["bar"].content != html:
                     overlay["bar"].content = html
                 overlay["detail"].text = t.detail or f"{int(t.elapsed)} s"
+                src = f"/work/previews/{t.preview}?v={t.preview_n}" if t.preview else ""  # a built string: no disk access here
+                if src and overlay["preview"].source != src:
+                    overlay["preview"].set_source(src)
+                overlay["preview"].set_visibility(bool(src))
         else:
             if gen_b.text != idle_label:
                 gen_b.text = idle_label

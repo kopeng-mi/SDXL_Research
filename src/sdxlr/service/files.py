@@ -21,7 +21,7 @@ from ..paths import COMPARE, DATASETS, LORAS, MODELS, OUTPUTS, RUNS, THUMBS, WOR
 IMG = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 REFRESH_SECS = 2.5
 FULL_RESCAN_SECS = 20.0  # rescan even when no directory changed (files edited in place)
-SERVED = ("outputs", "thumbs", "compare")  # the only dirs under WORK the browser can fetch
+SERVED = ("outputs", "thumbs", "compare", "previews")  # the only dirs under WORK the browser can fetch
 PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
 
 _lock = threading.Lock()
@@ -187,6 +187,19 @@ def forget_thumbs() -> None:
     _ready.clear()
 
 
+def view_url(p) -> str | None:
+    """What the page shows for an image: the worker's WebP copy when it made one, else the display copy
+    (None while that is being made). Download always gives the PNG."""
+    key = (str(p), -1)
+    w = Path(p).with_suffix(".webp")
+    if key in _ready:
+        return url(w)
+    if w.exists():  # called from redraws, not from timers
+        _ready.add(key)
+        return url(w)
+    return display_url(p)
+
+
 def display_ready(p) -> bool:
     """True once the display copy exists (a memory check, safe in a timer)."""
     return (str(p), DISPLAY) in _ready
@@ -261,8 +274,8 @@ def _refresh(force: bool = False) -> None:
         _make_missing(pending)
         return
     _sig[0], _sig[1] = sig, now
-    for key in [k for k in _ready if not _thumb_path(Path(k[0]), k[1]).exists()]:  # thumbs deleted behind our back
-        _ready.discard(key)
+    for key in [k for k in _ready if not (Path(k[0]).with_suffix(".webp") if k[1] < 0 else _thumb_path(Path(k[0]), k[1])).exists()]:
+        _ready.discard(key)  # thumbs and WebP copies deleted behind our back
     his = history.items(220)
     loras, models, zimage = list_loras(), list_models(), list_zimage()
     ds = {}

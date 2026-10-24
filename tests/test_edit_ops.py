@@ -144,6 +144,7 @@ def test_whole_keep_size_and_variations() -> None:
     src = make_source(2400, 1800)
     r = run({"tool": "whole", "strength": 0.5, "keep_size": True, "count": 2}, src)
     assert len(r["paths"]) == 2 and all(Image.open(p).size == (2400, 1800) for p in r["paths"])
+    assert all(Path(p).with_suffix(".webp").exists() for p in r["paths"]), "a WebP display copy beside each PNG"
     check_sidecars(r, src, "whole")
     r2 = run({"tool": "whole", "strength": 0.5, "keep_size": False}, src)
     w, h = Image.open(r2["paths"][0]).size
