@@ -48,6 +48,7 @@ def page(S):
                         return
                     staged.clear()
                     staged_l.text = ""
+                    S["ds_link"] = ""
                     S["ds_pick"] = S["ds_name"].strip()
                     pick.set_options(sorted({*datasets(), S["ds_pick"]}), value=S["ds_pick"])
                     imp_line.track(job)

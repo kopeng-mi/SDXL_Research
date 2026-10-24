@@ -13,7 +13,7 @@ import time
 from nicegui import ui
 
 from ..jobs import fmt_secs
-from .core import OPEN_JOB, jm, job_error
+from .core import OPEN_JOB, jm, job_error, job_last_line
 
 HEAD = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -81,7 +81,7 @@ h1.t-title {font-size:24px; font-weight:500; line-height:1.25; margin:0;}
 .drop .q-uploader__list {min-height:0 !important; padding:0 8px;}
 .drop .q-uploader__subtitle {display:none;}
 .menu-btn {display:none;}
-@media (max-width: 900px) {.menu-btn {display:inline-flex; position:fixed; top:8px; left:8px; z-index:3000;}
+@media (max-width: 900px) {.menu-btn {display:inline-flex; position:fixed; top:8px; right:8px; z-index:3000;}
   .page {padding-top:48px !important;} .two-col {flex-wrap:wrap !important;} .two-col > * {width:100% !important;}}
 </style>
 """
@@ -149,10 +149,15 @@ class JobLine:
             self.text = ui.label().classes("t-small")
             self.bar = ui.html("", sanitize=False).classes("w-full")
             with ui.row().classes("gap-2"):
-                self.cancel = button("Cancel", lambda: jm.cancel(self.job_id), kind="stop")
+                self.cancel = button("Cancel", self.ask_cancel, kind="stop")
                 self.log = button("Show the log", self.open_log)
         self.box.set_visibility(False)
         ui.timer(1.0, self.tick)
+
+    def ask_cancel(self) -> None:
+        j = jm.jobs.get(self.job_id)
+        if j:
+            confirm(f"Stop \"{j.title}\"? Its progress so far is lost.", "Stop it", lambda: jm.cancel(j.id))
 
     def open_log(self) -> None:
         OPEN_JOB[ui.context.client.id] = self.job_id
@@ -178,9 +183,9 @@ class JobLine:
         elif j.status == "running":
             prog = f" {j.done}/{j.total}" if j.total else ""
             eta = f", {fmt_secs(j.eta)} left" if j.eta else ""
-            msg, cls = f"{j.title}:{prog}{eta}" if prog else f"{j.title}: working", "work"
+            msg, cls = f"{j.title}:{prog}{eta}" if prog else f"{j.title}: {job_last_line(j)}", "work"
         elif j.status == "failed":
-            msg, cls = f"{j.title} failed: {job_error(j)}", "bad"
+            msg, cls = f"Failed: {job_error(j)}", "bad"
         elif j.status == "cancelled":
             msg, cls = f"{j.title}: cancelled", "muted"
         else:

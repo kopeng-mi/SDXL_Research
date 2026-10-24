@@ -50,9 +50,13 @@ async def do_generate(S):
         return
     task = act.start("generate", S["prompt"][:50])
     try:
+        was_area = S["edit"]
         paths, info, seed = await run.io_bound(generate_blocking, copy.deepcopy(S), task)
         task.finish(info)
         S.update(image=paths[0], info=info, last_seed=seed, edit=False, boxes=[])
+        if was_area:
+            ui.notify("Area changed. The new image is a separate copy; the original is in the recent images",
+                      type="positive")
     except Cancelled:
         task.fail("")
         ui.notify("Cancelled")
@@ -122,8 +126,8 @@ def page(S):
             with preset_menu:
                 names = presets.list_presets()
                 for n in names:
-                    ui.menu_item(f"Use {n}", on_click=lambda n=n: (S.update(presets.load(n)), draw_loras(),
-                                                                  ui.notify(f"Preset {n} loaded")))
+                    ui.menu_item(f"Load preset: {n}", on_click=lambda n=n: (S.update(presets.load(n)), draw_loras(),
+                                                                           ui.notify(f"Preset {n} loaded")))
                 if names:
                     ui.separator()
                 ui.menu_item("Save the current settings…", on_click=save_preset)
@@ -136,8 +140,9 @@ def page(S):
                 ui.label("Save these settings as a preset").classes("t-head")
                 name = labeled("Name", ui.input())
                 existing = presets.list_presets()
-                if existing:
-                    ui.label("Saved: " + ", ".join(existing)).classes("hint")
+                ui.label("Saves the model, mode, size, prompt, seed and LoRAs. "
+                         + (f"Existing presets: {', '.join(existing)}. The same name replaces one." if existing else "")) \
+                    .classes("hint")
 
                 def ok():
                     n = (name.value or "").strip()
@@ -189,12 +194,14 @@ def page(S):
                         sl = ui.slider(min=-1, max=2, step=0.01, value=row[1],
                                        on_change=lambda e, i=i: S["loras"][i].__setitem__(1, e.value)) \
                             .classes("w-28").tooltip("Strength")
-                        ui.number(format="%.2f", step=0.05).bind_value(sl, "value").props("outlined dense") \
-                            .style("width:76px")
+                        ui.number(format="%.2f", step=0.05, min=-1, max=2).bind_value(sl, "value") \
+                            .props("outlined dense").style("width:76px").tooltip("From -1 to 2")
                         ui.button(icon="close", on_click=lambda i=i: (S["loras"].pop(i), draw_loras())) \
                             .props("flat dense round size=sm").tooltip("Remove")
                 if not names:
                     ui.label("No LoRAs yet. Add some in Library, or train one.").classes("hint")
+                elif any(not r[0] for r in S["loras"]):
+                    ui.label("Rows without a LoRA picked are skipped.").classes("hint")
                 button("Add a LoRA", lambda: (S["loras"].append([None, 0.8]), draw_loras()), icon="add") \
                     .props("size=sm")
 
@@ -221,14 +228,17 @@ def page(S):
                 labeled("Clip skip", ui.number(min=1, max=3, step=1, format="%d").bind_value(S, "clip_skip"))
         with ui.expansion("Model options").classes("w-full"):
             with ui.column().classes("w-full gap-2").bind_visibility_from(S, "kind", value="Z-Image"):
-                labeled("Text encoder", ui.select(list(Z_ENCODERS), with_input=True, new_value_mode="add-unique")
-                        .bind_value(S, "z_te"), "abliterated refuses less; or type org/repo[:subfolder]")
+                labeled("Prompt reader (text encoder)", ui.select(
+                    {"official": "Official", "abliterated": "Uncensored (follows more prompts)"},
+                    with_input=True, new_value_mode="add-unique").bind_value(S, "z_te"),
+                    "The part that reads your prompt. You can also type a Hugging Face repo")
                 with ui.column().classes("gap-0"):
-                    ui.label("Text encoder size").classes("lbl")
-                    seg({"nf4": "Smaller (nf4)", "int8": "Better (int8, +2 GB)"}, S, "z_quant")
+                    ui.label("Prompt reader size").classes("lbl")
+                    seg({"nf4": "Small, 2.5 GB", "int8": "Larger, 4.4 GB, a bit more accurate"}, S, "z_quant")
             with ui.column().classes("gap-0").bind_visibility_from(S, "kind", value="SDXL"):
-                ui.label("VAE").classes("lbl")
-                seg({"fp16fix": "fp16-fix (recommended)", "model": "The checkpoint's own"}, S, "vae")
+                ui.label("Image decoder (VAE)").classes("lbl")
+                seg({"fp16fix": "Fixed for this GPU (recommended)", "model": "The checkpoint's own"}, S, "vae")
+                ui.label("The checkpoint's own decoder can give black images on a T4").classes("hint")
             ui.label("Changing these needs the model to load again.").classes("hint")
 
     # ----- image side -----
@@ -237,7 +247,8 @@ def page(S):
         with banner:
             ui.label("Change an area: drag on the image to mark what to change, then press Generate.").classes("t-small")
             with ui.row().classes("w-full items-center no-wrap gap-3"):
-                ui.label().bind_text_from(S, "strength", lambda v: f"How much to change: {v:.2f}").classes("t-small tnum")
+                ui.label().bind_text_from(S, "strength", lambda v: f"Strength {v:.2f}").classes("t-small tnum") \
+                    .style("white-space:nowrap").tooltip("Low keeps more of the original; 1 repaints the area fully")
                 ui.slider(min=0.1, max=1.0, step=0.05).bind_value(S, "strength").classes("grow")
                 button("Clear marks", lambda: (S["boxes"].clear(), draw_canvas()))
                 button("Done", lambda: leave_edit())

@@ -20,7 +20,7 @@ from . import core
 from .core import (LORAS, MODELS, USAGE, busy_task, eng, estimate_preview, jm, job_error, loaded_label, running_job,
                    state_for)
 from .pages import activity, compare, dataset, generate, history, library, train
-from .theme import HEAD, bar_html, button
+from .theme import HEAD, bar_html, button, confirm
 
 PAGES = [("Generate", "/", generate.page, "auto_awesome"), ("Dataset", "/dataset", dataset.page, "photo_library"),
          ("Train", "/train", train.page, "model_training"), ("Compare", "/compare", compare.page, "grid_view"),
@@ -45,13 +45,19 @@ def root():
     S = state_for(code)
 
     navs = {}
+
+    async def go(path):
+        ui.navigate.to(path)
+        if await ui.run_javascript("window.innerWidth", timeout=3) < 900:
+            drawer.hide()  # on a narrow screen the menu covers the page
+
     drawer = ui.left_drawer(value=True, fixed=True).props("width=252 breakpoint=900 show-if-above").classes("p-4")
     ui.button(icon="menu", on_click=drawer.toggle).props("flat round").classes("menu-btn")
     with drawer:
         with ui.column().classes("w-full h-full gap-1 no-wrap"):
             ui.label("SDXL Research").classes("t-head pb-3")
             for name, path, _, icon in PAGES:
-                navs[path] = ui.button(name, icon=icon, on_click=lambda path=path: ui.navigate.to(path)) \
+                navs[path] = ui.button(name, icon=icon, on_click=lambda path=path: go(path)) \
                     .props("flat no-caps align=left").classes("nav")
             ui.space()
             with ui.column().classes("w-full gap-2 section"):
@@ -65,9 +71,9 @@ def root():
                 def cancel_current():
                     t = busy_task()
                     if t:
-                        t.cancel()
+                        t.cancel()  # a load or an image: cheap to redo, no question
                     elif (j := running_job()) is not None:
-                        jm.cancel(j.id)
+                        confirm(f"Stop \"{j.title}\"? Its progress so far is lost.", "Stop it", lambda: jm.cancel(j.id))
 
                 cancel_b = button("Cancel", cancel_current, kind="stop").props("size=sm")
             with ui.row().classes("w-full items-center section"):
@@ -146,8 +152,8 @@ def root():
         for j in list(jm.jobs.values()):
             if j.status == "failed" and j.id not in seen["failed"]:
                 seen["failed"].add(j.id)
-                ui.notify(f"{j.title} failed: {job_error(j)}", type="negative", multi_line=True, timeout=0,
-                          close_button="Close")
+                ui.notify(f"{j.title} failed. The reason is on its page and in Activity", type="negative",
+                          timeout=8000, close_button="Close")
             elif j.status == "done" and j.id not in seen["done"]:
                 seen["done"].add(j.id)
                 ui.notify(f"{j.title}: done", type="positive")

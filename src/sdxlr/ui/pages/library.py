@@ -85,13 +85,15 @@ def page(S):
             with ui.row().classes("w-full items-center"):
                 ui.label("On this VM").classes("t-head")
                 ui.space()
-                button("Free disk space", lambda: free(), icon="cleaning_services") \
-                    .tooltip("Deletes download cache files that are not in use. They download again when needed")
+                button("Free disk space", lambda: free(), icon="cleaning_services")
+            ui.label("Free disk space deletes cached downloads that are not in use; they download again when needed.") \
+                .classes("hint")
             table = ui.column().classes("w-full gap-0")
 
     def free():
         gb = resources.clear_download_cache([eng.model_path or "", Z_REPO, FP16_VAE])
-        ui.notify(f"Freed {gb:.1f} GB", type="positive")
+        ui.notify(f"Freed {gb:.1f} GB" if gb >= 0.05 else "Nothing to free: the cache only holds files in use",
+                  type="positive")
 
     def files():
         return ([("SDXL checkpoint", p) for p in list_models()] + [("Z-Image model", p) for p in list_zimage()]

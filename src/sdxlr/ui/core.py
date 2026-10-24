@@ -455,11 +455,19 @@ def job_error(j) -> str:
     for l in reversed(lines):
         if "Error" in l or "error" in l or "failed" in l:
             if "ModuleNotFoundError" in l:
-                return "A package is missing in the app's environment: run Setup again. (" + l.split(":")[-1].strip() + ")"
+                return "A package is missing. Run the Setup cell in the notebook again, then retry. (" + l.split(":")[-1].strip() + ")"
             if "OutOfMemoryError" in l or "out of memory" in l.lower():
                 return "The GPU ran out of memory: lower the batch, resolution or image count"
             return l.strip()[-200:]
     return lines[-1][-200:] if lines else f"exit code {j.returncode}"
+
+
+def job_last_line(j) -> str:
+    """What a running job printed last (downloads and caching print no step counter)."""
+    for l in reversed(j.log):
+        if l.strip():
+            return l.strip()[-120:]
+    return "Starting"
 
 
 def estimate_preview(S):
