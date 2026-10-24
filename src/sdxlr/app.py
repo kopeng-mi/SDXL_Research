@@ -21,9 +21,20 @@ import numpy as np
 from PIL import Image, PngImagePlugin
 
 from . import presets, resources, session, settings
-from .engine import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, Engine, Job, ram, vram
+from .engine import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO  # light re-exports
+from .engine.models import Engine, Job, ram, vram
+from .engine.worker import model_parts
+
+
+def _beat() -> dict:
+    """The in-process engine as a heartbeat dict (resources.bars reads those)."""
+    import torch
+    if eng.pipe is None:
+        return {}
+    return {"kind": eng.kind, "model_path": eng.model_path, "parts": model_parts(eng.pipe, eng.adapters),
+            "reserved": torch.cuda.memory_reserved() / 2**30 if torch.cuda.is_available() else 0.0}
 from .fetch import LORAS, MODELS, WORK, ZIMAGE, add_file, fetch_loras, list_loras, list_models, list_zimage
-from .jobs import JobManager, fmt_secs
+from .service.jobs import JobManager, fmt_secs
 from .modes import ASPECTS, MODES, PONY_NEG, PONY_TAGS, STYLES, train_eta
 
 DATASETS = WORK / "datasets"
@@ -478,7 +489,7 @@ def build() -> gr.Blocks:
                 code_in = gr.Textbox(placeholder="code", show_label=False, max_length=4, scale=0, min_width=80,
                                      container=False)
                 code_go = gr.Button("Resume", size="sm", scale=0, min_width=80)
-            res = gr.HTML(resources.bars(eng, jm))
+            res = gr.HTML(resources.bars(_beat(), jm))
 
         with gr.Tabs():
             # ===== Generate =====
@@ -753,7 +764,7 @@ def build() -> gr.Blocks:
             keep = gr.update()
             ds_view = show_dataset(ds)[:2] if kinds & {"import", "caption"} else (keep, keep)
             lists = refresh_lists() if kinds & {"download", "train", "import", "upload"} else [keep] * len(list_outs)
-            return (_header(), resources.bars(eng, jm, load_preview(k, sm, zm, zq)), _jobs_table(), job_log(jid),
+            return (_header(), resources.bars(_beat(), jm, load_preview(k, sm, zm, zq)), _jobs_table(), job_log(jid),
                     *ds_view, *lists)
 
         timer = gr.Timer(2.0)

@@ -16,7 +16,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .engine import Z_ENCODERS, Z_MODELS, Engine, Job
+from .engine.models import Engine, Job
+from .paths import Z_ENCODERS, Z_MODELS
 from .fetch import LORAS, MODELS, WORK, fetch, list_loras
 
 OUT = WORK / "compare"

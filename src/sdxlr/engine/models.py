@@ -31,8 +31,8 @@ from typing import Callable
 import torch
 from PIL import Image
 
-from .paths import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, z_key
-from .prompt import encode_sdxl
+from ..paths import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, z_key
+from ..prompt import encode_sdxl
 
 MAX_ADAPTERS = 12
 
@@ -162,8 +162,8 @@ class Engine:
         from diffusers import GGUFQuantizationConfig, ZImagePipeline, ZImageTransformer2DModel
         from transformers import AutoModel, BitsAndBytesConfig
 
-        from .fetch import MODELS, fetch
-        from .zimage_fp16 import patch
+        from ..fetch import MODELS, fetch
+        from ..zimage_fp16 import patch
 
         self.unload()
         t = time.time()

@@ -10,7 +10,7 @@ from nicegui import run, ui
 
 from ... import history, presets
 from ...activity import Cancelled, act
-from ..core import (ASPECTS, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, eng,
+from ..core import (ASPECTS, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, engc,
                     err, generate_blocking, is_loaded, load_blocking, lora_names, model_names, picked_label, reuse,
                     save_upload, task_is_loading, thumb, url, z_names)
 from ..theme import button, labeled, main_button, seg
@@ -90,9 +90,7 @@ def page(S):
                 t.cancel()
                 ui.notify("Cancelling. A download stops now; loading stops after the current step")
             elif is_loaded(S):
-                from ..core import gpu_lock
-                with gpu_lock:
-                    eng.unload()
+                await run.io_bound(engc.unload)
                 ui.notify("Model unloaded")
             else:
                 await do_load(S)
@@ -391,7 +389,7 @@ def page(S):
         elif is_loaded(S):
             ms, mb = f'<span class="dot ok"></span>{picked_label(S)} is ready', "Unload"
         else:
-            other = " (another model is in memory)" if eng.pipe is not None else ""
+            other = " (another model is in memory)" if engc.loaded else ""
             ms, mb = f'<span class="dot"></span>{picked_label(S)} is not loaded{other}', "Load"
         if mstate.content != ms:
             mstate.content = ms

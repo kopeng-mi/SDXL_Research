@@ -9,7 +9,7 @@ from nicegui import ui
 from ...activity import LOGS, act
 from ..core import OPEN_JOB, jm, job_error, logs_zip
 from ..theme import button, title
-from ...jobs import fmt_secs
+from ...service.jobs import fmt_secs
 
 STATUS = {"running": ("Running", "work"), "queued": ("Waiting", "work"), "done": ("Done", "ok"),
           "failed": ("Failed", "bad"), "cancelled": ("Cancelled", "muted")}

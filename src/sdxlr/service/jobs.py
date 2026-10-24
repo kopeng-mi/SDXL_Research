@@ -23,11 +23,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .activity import LOG_EVERY, LOGS, log
+from ..activity import LOG_EVERY, LOGS, log
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 _PROGRESS = re.compile(r"(\d+)/(\d+)\s*\[")  # tqdm: " 12/300 [00:10<..."
 _STEP = re.compile(r"\[(\d+)/(\d+)\]")  # our scripts: "[3/5] file ..."
+
+gpu_lock = threading.Lock()  # keeps generation and GPU jobs apart (held across a whole generate)
 
 
 @dataclass
@@ -167,3 +169,11 @@ class JobManager:
         else:
             log.info(f"[job {job.id}] {text}")
         job.log.append(text)
+
+
+def _before_gpu_job(job) -> None:
+    from . import gen  # late import: gen needs gpu_lock and jm from here
+    gen.before_gpu_job(job)
+
+
+jm = JobManager(on_gpu_job_start=_before_gpu_job, on_gpu_job_end=lambda job: gpu_lock.release())

@@ -9,7 +9,7 @@ from nicegui import ui
 from ... import presets, resources, settings
 from ...engine import FP16_VAE, Z_REPO
 from ...fetch import LORAS, MODELS, ZIMAGE, add_file, fetch_loras, list_loras, list_models, list_zimage
-from ..core import SHRED, UPLOADS, eng, err, jm, shred, shred_sizes, size_text
+from ..core import SHRED, UPLOADS, engc, err, jm, shred, shred_sizes, size_text
 from ..theme import JobLine, button, confirm, labeled, main_button, seg, title
 
 KINDS = {"LoRA": "loras", "SDXL checkpoint": "model", "Z-Image model": "zimage"}
@@ -137,7 +137,7 @@ def page(S):
         d.open()
 
     def free():
-        gb = resources.clear_download_cache([eng.model_path or "", Z_REPO, FP16_VAE])
+        gb = resources.clear_download_cache([engc.model_path or "", Z_REPO, FP16_VAE])
         ui.notify(f"Freed {gb:.1f} GB" if gb >= 0.05 else "Nothing to free: the cache only holds files in use",
                   type="positive")
 

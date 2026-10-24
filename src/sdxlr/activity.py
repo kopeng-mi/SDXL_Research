@@ -64,10 +64,16 @@ class Task:
     _logged: float = 0.0
     cancelled: bool = False
     proc: object = None  # a child process doing part of the work (download); killed on cancel
+    on_cancel: object = None  # set while an engine op runs; stops the worker when the task is cancelled
 
     def cancel(self) -> None:
         self.cancelled = True
         log.info(f"[{self.kind}] {self.title}: cancel requested")
+        if self.on_cancel is not None:
+            try:
+                self.on_cancel()
+            except Exception as e:
+                log.info(f"cancel handler failed: {e}")
         if self.proc is not None and self.proc.poll() is None:
             self.proc.terminate()
 

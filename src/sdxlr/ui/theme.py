@@ -12,7 +12,7 @@ import time
 
 from nicegui import ui
 
-from ..jobs import fmt_secs
+from ..service.jobs import fmt_secs
 from .core import OPEN_JOB, jm, job_error, job_last_line
 
 HEAD = """

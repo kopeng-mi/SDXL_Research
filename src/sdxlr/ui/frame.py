@@ -15,10 +15,11 @@ from nicegui import app, ui
 
 from .. import presets, session, settings
 from ..activity import log, setup_logging
-from ..jobs import fmt_secs
+from ..paths import LORAS, MODELS
+from ..service.jobs import fmt_secs
 from . import core
-from .core import (LORAS, MODELS, USAGE, busy_task, eng, estimate_preview, jm, job_error, loaded_label, running_job,
-                   state_for, task_is_loading)
+from .core import (USAGE, busy_task, engc, estimate_preview, jm, loaded_label, running_job, state_for,
+                   task_is_loading)
 from .pages import activity, compare, dataset, generate, history, library, train
 from .theme import HEAD, bar_html, button, confirm
 
@@ -120,7 +121,7 @@ def root():
         pv = estimate_preview(S)
         parts = []
         for nm, (total, blocks) in dict(USAGE).items():
-            if nm == "VRAM" and pv and eng.pipe is not None:
+            if nm == "VRAM" and pv and engc.loaded:
                 blocks = [b for b in blocks if not b[0].startswith(("SDXL", "Z-Image", "working"))]
             used = sum(g for _, g in blocks)
             parts.append(f'<div class="t-small" style="display:flex;justify-content:space-between">'

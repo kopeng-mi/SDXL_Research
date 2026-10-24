@@ -1,13 +1,10 @@
-"""Shared state and the work behind the UI (no layout here).
+"""Shared state and helpers behind the UI (no layout here).
 
-Model loading and generation run in this process (threads, via run.io_bound);
-caption/train/compare/downloads run as child-process jobs (jobs.py). A GPU lock
-keeps generation and GPU jobs apart; the image model is unloaded before a GPU
-job starts.
-
-State: the form values of each session code live in STATES (shared by every
-tab that uses the code) and are saved to WORK/sessions every few seconds, so a
-dropped connection or a new link picks up where it left off.
+The work lives elsewhere: service.gen (load + generate through the engine
+worker, engine.client), service.jobs (child-process job queue: caption,
+train, compare, downloads) and service.files (names and listings). This
+module wires them together, keeps the per-session form state and re-exports
+what the pages use.
 
 Every submit_* / *_blocking function checks its inputs first and raises
 ValueError with a sentence the user can act on.
@@ -17,41 +14,23 @@ from __future__ import annotations
 
 import copy
 import json
-import math
-import os
-import subprocess
-import sys
-import threading
 import time
 import zipfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw, PngImagePlugin
+from PIL import Image
 
 from .. import history, resources, session
-from ..activity import LOGS, act, log
-from ..engine import SAMPLERS, Z_ENCODERS, Z_MODELS, Engine, Job  # noqa: F401  (SAMPLERS used by pages)
-from ..fetch import fetch, list_loras, list_models, list_zimage
-from ..jobs import JobManager, fmt_secs
-from ..modes import ASPECTS, MODES, PONY_NEG, PONY_TAGS, STYLES, train_eta
-from ..paths import DATASETS, LORAS, MODELS, OUTPUTS, SDXL_BASE, THUMBS, UPLOADS, WORK
+from ..activity import LOGS, log
+from ..engine import SAMPLERS, Z_ENCODERS, Z_MODELS  # noqa: F401  (SAMPLERS used by pages)
+from ..modes import ASPECTS, STYLES, train_eta  # noqa: F401  (ASPECTS/STYLES used by pages)
+from ..paths import DATASETS, MODELS, OUTPUTS, SDXL_BASE, THUMBS, UPLOADS, WORK  # noqa: F401  (UPLOADS: pages)
+from ..service.files import datasets, images, lora_names, lora_path, model_names, model_path, z_names, z_path  # noqa: F401 (pages)
+from ..service.gen import (TOOL_LABEL, busy_task, check_generate, check_model, engc, generate_blocking,  # noqa: F401
+                           is_loaded, load_blocking, loaded_label, picked_label, reuse, running_job, task_is_loading)
+from ..service.jobs import fmt_secs, gpu_lock, jm  # noqa: F401
 
-IMG = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 NEG_SDXL = "(worst quality:1.3), (low quality:1.2), lowres, bad anatomy, bad hands, watermark, blur, cartoon, anime, drawing"
-
-eng = Engine()
-gpu_lock = threading.Lock()
-
-
-def _before_gpu_job(job):
-    gpu_lock.acquire()  # waits for a running generation to finish
-    if eng.pipe is not None:
-        log.info(f"[job {job.id}] unloading the image model to free the GPU")
-    eng.unload()
-
-
-jm = JobManager(on_gpu_job_start=_before_gpu_job, on_gpu_job_end=lambda job: gpu_lock.release())
-
 DEFAULTS = {
     # generate
     "kind": "Z-Image", "sdxl_model": None, "vae": "fp16fix", "z_model": "turbo Q8", "z_te": "official",
@@ -103,11 +82,11 @@ OPEN_JOB: dict[str, str] = {}  # browser tab id -> job whose log Activity should
 def sample_usage_loop() -> None:
     """NVML, psutil and folder sizes are slow: measure here, never in the event loop."""
     import shutil
-    root = "/content" if Path("/content").exists() else "."
+    root = "/content" if Path("/content").exists() else str(WORK.anchor)
     last, last_t = shutil.disk_usage(root).used, time.time()
     while True:
         try:
-            USAGE.update(resources.usage(eng, jm))
+            USAGE.update(resources.usage(engc.beat, jm))
         except Exception as e:
             log.info(f"usage sample failed: {e}")
         time.sleep(2)
@@ -116,40 +95,7 @@ def sample_usage_loop() -> None:
         last, last_t = used, now
 
 
-# ---------- names and files ----------
-def lora_names():
-    return [p.name for p in list_loras()]
-
-
-def lora_path(name):
-    return next((str(p) for p in list_loras() if p.name == name), None)
-
-
-def model_names():
-    return [p.name for p in list_models()]
-
-
-def model_path(name):
-    return next((str(p) for p in list_models() if p.name == name), name)
-
-
-def z_names():
-    return [*Z_MODELS, *(p.name for p in list_zimage())]
-
-
-def z_path(name):
-    return Z_MODELS.get(name) or next((str(p) for p in list_zimage() if p.name == name), name)
-
-
-def datasets():
-    return sorted(p.name for p in DATASETS.iterdir() if p.is_dir()) if DATASETS.exists() else []
-
-
-def images(ds):
-    d = DATASETS / ds if ds else None
-    return sorted(p for p in d.iterdir() if p.suffix.lower() in IMG) if d and d.exists() else []
-
-
+# ---------- files ----------
 def url(p) -> str:
     """Browser URL of a file under WORK (served at /work)."""
     return f"/work/{Path(p).relative_to(WORK).as_posix()}?v={int(Path(p).stat().st_mtime)}"
@@ -179,196 +125,6 @@ def logs_zip() -> Path:
         for f in LOGS.rglob("*.log"):
             z.write(f, f.relative_to(LOGS))
     return out
-
-
-# ---------- model ----------
-def wanted(S) -> str:
-    if S["kind"] == "Z-Image":
-        return f"zimage|{z_path(S['z_model'])}|{Z_ENCODERS.get(S['z_te'], S['z_te'])}|{S['z_quant']}"
-    return model_path(S["sdxl_model"]) if S["sdxl_model"] else ""
-
-
-def is_loaded(S) -> bool:
-    return eng.pipe is not None and eng.model_path == wanted(S) and (S["kind"] == "Z-Image" or eng.vae_mode == S["vae"])
-
-
-def picked_label(S) -> str:
-    if S["kind"] == "Z-Image":
-        return f"Z-Image {S['z_model']}"
-    return f"SDXL {Path(S['sdxl_model']).stem}" if S["sdxl_model"] else "SDXL (no checkpoint picked)"
-
-
-def loaded_label() -> str | None:
-    if eng.kind == "zimage":
-        return "Z-Image " + Path(eng.model_path.split("|")[1]).stem
-    if eng.kind == "sdxl":
-        return "SDXL " + Path(eng.model_path).stem
-    return None
-
-
-def check_model(S) -> None:
-    if S["kind"] == "SDXL" and not S["sdxl_model"]:
-        raise ValueError("Pick an SDXL checkpoint first (add one in Library)")
-
-
-def busy_task():
-    return next((t for t in act.running() if t.kind in ("load", "generate")), None)
-
-
-def task_is_loading(t) -> bool:
-    """True while a load (or the load step of a generation) is going on."""
-    return bool(t) and (t.kind == "load" or not t.stage.startswith(("Generating", "Changing", "Upscaling", "Done")))
-
-
-def running_job():
-    return next((j for j in jm.recent(30) if j.status == "running"), None)
-
-
-def _prefetch(task, *args) -> None:
-    """Download what a load needs in a child process, so Cancel can stop it."""
-    task.set_stage("Getting the model files")
-    task.proc = subprocess.Popen([sys.executable, "-u", "-m", "sdxlr.fetch", *args], stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
-    tail = []
-    for line in task.proc.stdout:
-        tail = (tail + [line.rstrip()])[-5:]
-        if line.startswith(("model file", "text encoder", "configs")):
-            task.stage = {"m": "Got the model file", "t": "Got the text encoder", "c": "Got VAE and configs"}[line[0]]
-    rc = task.proc.wait()
-    task.proc = None
-    task.check()
-    if rc:
-        raise RuntimeError("download failed: " + " | ".join(tail))
-
-
-def _load(S, task) -> None:
-    """Load the model picked in S (caller holds gpu_lock)."""
-    if is_loaded(S):
-        return
-    check_model(S)
-    if S["kind"] == "Z-Image":
-        _prefetch(task, "prefetch-zimage", z_path(S["z_model"]), Z_ENCODERS.get(S["z_te"], S["z_te"]))
-        eng.load_zimage(z_path(S["z_model"]), Z_ENCODERS.get(S["z_te"], S["z_te"]), S["z_quant"], status=task.set_stage)
-    else:
-        if S["vae"] == "fp16fix":
-            _prefetch(task, "prefetch-sdxl")
-        eng.load(model_path(S["sdxl_model"]), S["vae"], status=task.set_stage)
-
-
-def _gpu_free() -> None:
-    if jm.gpu_busy() or not gpu_lock.acquire(blocking=False):
-        j = running_job()
-        raise ValueError(f"The GPU is busy with \"{j.title if j else 'a job'}\". Try again when it finishes.")
-
-
-def load_blocking(S, task) -> str:
-    _gpu_free()
-    try:
-        _load(S, task)
-    finally:
-        gpu_lock.release()
-    return loaded_label()
-
-
-def _mask(size, boxes):
-    m = Image.new("L", size, 0)
-    d = ImageDraw.Draw(m)
-    for x0, y0, x1, y1 in boxes:
-        d.rectangle([min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)], fill=255)
-    return m
-
-
-TOOL_LABEL = {None: "Generate", "area": "Change the area", "whole": "Change the whole image", "upscale": "Upscale"}
-
-
-def check_generate(S) -> None:
-    if not S["prompt"].strip() and S["tool"] != "upscale":
-        raise ValueError("Write a prompt first")
-    check_model(S)
-    if S["tool"] and not (S["src"] and Path(S["src"]).exists()):
-        raise ValueError("Pick or upload an image first")
-    if S["tool"] == "area" and not S["boxes"]:
-        raise ValueError("Drag on the image to mark the area to change first")
-
-
-def generate_blocking(S, task) -> tuple[list[str], str, int]:
-    check_generate(S)
-    _gpu_free()
-    try:
-        _load(S, task)
-        kind = eng.kind
-        m = MODES[kind][S["mode"]]
-        steps, cfg, sampler = (S["steps"], S["cfg"], S["sampler"]) if S["use_adv"] else \
-            (m["steps"], m["cfg"], m.get("sampler", S["sampler"]))
-        loras = [(lora_path(n), max(-1.0, min(2.0, float(w)))) for n, w in S["loras"] if n and w]  # -1..2
-        loras = [(p, w) for p, w in loras if p]
-        if kind == "sdxl" and m.get("lora"):
-            task.set_stage("Getting the Fast mode LoRA")
-            loras.append((str(fetch(m["lora"][0], LORAS)), m["lora"][1]))
-        prompt = S["prompt"].strip()
-        full = ", ".join(x for x in (prompt, STYLES.get(S["style"], "")) if x)
-        neg = S["negative"] if kind == "sdxl" else ""
-        if kind == "sdxl" and "pony" in (eng.model_path or "").lower():
-            full, neg = f"{PONY_TAGS}, {full}", f"{PONY_NEG}, {neg}"
-        w, h = ASPECTS[S["aspect"]]
-        tool = S["tool"]
-        image = mask = None
-        strength = {"area": S["strength"], "whole": S["whole_strength"], "upscale": S["up_strength"]}.get(tool, 0.75)
-        if tool:
-            image = Image.open(S["src"]).convert("RGB")
-            w, h = image.size
-            if tool == "area":
-                mask = _mask(image.size, S["boxes"])
-            # image-to-image runs only steps x strength of the schedule: keep at least 4 real steps
-            steps = max(int(steps), math.ceil(4 / max(strength, 0.05)))
-        job = Job(prompt=full, negative=neg, steps=int(steps), cfg=float(cfg), sampler=sampler, width=w, height=h,
-                  seed=int(S["seed"]), count=1 if tool else int(S["count"]), clip_skip=int(S["clip_skip"]),
-                  loras=loras, image=image, mask=mask, strength=float(strength), on_step=task.step)
-        t0 = time.time()
-        if tool == "upscale":
-            task.set_stage(f"Upscaling {S['up_scale']:g}x")
-            big, seed, info = eng.upscale(job, float(S["up_scale"]), on_tile=task.step)
-            imgs = [big]
-            w, h = big.size
-        else:
-            task.set_stage({"area": "Changing the area", "whole": "Changing the image"}.get(tool, "Generating"))
-            imgs, seed, info = eng.generate(job)
-    finally:
-        gpu_lock.release()
-    meta = {"prompt_raw": prompt, "prompt": full, "negative_raw": S["negative"], "negative": neg, "style": S["style"],
-            "mode": S["mode"], "steps": job.steps, "cfg": job.cfg, "sampler": sampler, "clip_skip": job.clip_skip,
-            "aspect": S["aspect"], "size": [w, h], "seed": seed, "count": job.count,
-            "loras": [[n, float(x)] for n, x in S["loras"] if n and x],
-            "kind": S["kind"], "sdxl_model": S["sdxl_model"], "vae": S["vae"], "z_model": S["z_model"],
-            "z_te": S["z_te"], "z_quant": S["z_quant"], "tool": tool, "source": S["src"] if tool else None,
-            "strength": job.strength, "scale": S["up_scale"] if tool == "upscale" else None,
-            "seconds": round(time.time() - t0, 1), "made": time.strftime("%Y-%m-%d %H:%M:%S")}
-    day = OUTPUTS / time.strftime("%Y-%m-%d")
-    day.mkdir(parents=True, exist_ok=True)
-    png = PngImagePlugin.PngInfo()
-    png.add_text("sdxlr", json.dumps(meta))
-    paths = []
-    for i, im in enumerate(imgs):
-        p = day / f"{time.strftime('%H%M%S')}_{seed + i}.png"
-        im.save(p, pnginfo=png)
-        history.save(p, {**meta, "seed": seed + i})
-        paths.append(str(p))
-    return paths, info, seed
-
-
-def reuse(S, meta: dict) -> list[str]:
-    """Fill the form from a history JSON so the same image can be made again; returns missing LoRAs."""
-    for k in ("negative", "style", "mode", "steps", "cfg", "sampler", "clip_skip", "aspect", "seed", "kind",
-              "sdxl_model", "vae", "z_model", "z_te", "z_quant", "strength"):
-        if k in meta and meta[k] is not None:
-            S[k] = meta[k]
-    S["prompt"] = meta.get("prompt_raw", meta.get("prompt", ""))
-    if "negative_raw" in meta:
-        S["negative"] = meta["negative_raw"]
-    S["loras"] = [list(x) for x in meta.get("loras", [])]
-    S["use_adv"] = True  # same steps/cfg/sampler as recorded
-    S["count"], S["tool"] = 1, None
-    return [n for n, _ in S["loras"] if n not in lora_names()]
 
 
 def save_upload(data: bytes, name: str) -> str:
@@ -401,14 +157,14 @@ def shred_sizes() -> dict[str, float]:
 
 
 def shred(kinds: list[str]) -> float:
-    """Delete everything of the picked kinds from the VM; returns GB freed. Unloads the model first."""
+    """Delete everything of the picked kinds from the VM; returns GB freed. Stops the engine first."""
     import shutil
     from ..resources import HF_CACHE
     if jm.gpu_busy() or busy_task():
         raise ValueError("Wait until nothing is running, then try again")
     sizes = shred_sizes()
     with gpu_lock:
-        eng.unload()
+        engc.kill()
     for k in kinds:
         for d in SHRED[k][1]:
             shutil.rmtree(WORK / d, ignore_errors=True)

@@ -1,12 +1,12 @@
-"""Resource bars for the header: what sits in VRAM, RAM and disk, by name.
+"""Resource bars for the sidebar: what sits in VRAM, RAM and disk, by name.
 
-  bars(eng, jm, preview)  -> HTML with three stacked bars
-  estimate(kind, ...)     -> (label, GB) VRAM a model will take once loaded
+  usage(beat, jm)          -> {"VRAM"|"RAM"|"Disk": (total GB, [(block, GB), ...])}
+  bars(beat, jm, preview)  -> HTML with three stacked bars
+  estimate(kind, ...)      -> (label, GB) VRAM a model will take once loaded
 
-VRAM is split into the loaded model's parts (measured from the weights),
-LoRA adapters, the CUDA cache, and GPU jobs (child processes, via nvidia-smi).
-A preview block (hatched) shows what a model picked in Generate would take;
-loading it replaces the current model, so the bar shows it in that place.
+No torch here: the web process reads the engine worker's heartbeat (beat:
+model parts, CUDA allocated/reserved, worker RSS) and NVML for totals and
+GPU job processes.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import time
 from pathlib import Path
 
 import psutil
-import torch
 
 GB = 2**30
 COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4", "#a855f7", "#84cc16", "#f97316"]
@@ -27,42 +26,6 @@ HF_CACHE = Path.home() / ".cache" / "huggingface"
 TE_GB = {"nf4": 2.5, "int8": 4.4}
 Z_EXTRA_GB = 0.4  # VAE + norms outside the GGUF file
 SDXL_GB = 6.9  # fp16 UNet + both CLIPs + VAE
-
-_parts_cache: dict = {}
-
-
-def _bytes(module) -> int:
-    seen, n = set(), 0
-    for t in [*module.parameters(), *module.buffers()]:
-        if t.data_ptr() not in seen and t.device.type == "cuda":
-            seen.add(t.data_ptr())
-            n += t.numel() * t.element_size()
-    return n
-
-
-def model_parts(eng) -> list[tuple[str, float]]:
-    """[(part, GB)] for the loaded pipeline; LoRA weights counted separately."""
-    if eng.pipe is None:
-        return []
-    key = (eng.model_path, tuple(eng.adapters.values()))
-    if key in _parts_cache:
-        return _parts_cache[key]
-    names = {"unet": "UNet", "transformer": "DiT", "text_encoder": "text encoder", "text_encoder_2": "text encoder 2",
-             "vae": "VAE"}
-    out, lora = [], 0
-    for attr, label in names.items():
-        m = getattr(eng.pipe, attr, None)
-        if m is None:
-            continue
-        lb = sum(p.numel() * p.element_size() for n, p in m.named_parameters() if "lora_" in n and p.device.type == "cuda")
-        lora += lb
-        out.append((label, (_bytes(m) - lb) / GB))
-    if lora:
-        out.append((f"LoRAs ({len(eng.adapters)})", lora / GB))
-    _parts_cache.clear()
-    _parts_cache[key] = out
-    return out
-
 
 _nvml: list = []
 
@@ -77,6 +40,19 @@ def _gpu_procs() -> dict[int, float]:
         return {p.pid: (p.usedGpuMemory or 0) / GB for p in pynvml.nvmlDeviceGetComputeRunningProcesses(_nvml[0])}
     except Exception:
         return {}
+
+
+def _gpu_mem() -> tuple[float, float] | None:
+    """(total GB, free GB) via NVML, or None without a GPU."""
+    try:
+        import pynvml
+        if not _nvml:
+            pynvml.nvmlInit()
+            _nvml.append(pynvml.nvmlDeviceGetHandleByIndex(0))
+        mi = pynvml.nvmlDeviceGetMemoryInfo(_nvml[0])
+        return mi.total / GB, (mi.total - mi.used) / GB
+    except Exception:
+        return None
 
 
 def _tree_pids(pid: int) -> set[int]:
@@ -132,16 +108,18 @@ def _bar(title: str, total: float, blocks: list[tuple[str, float]], preview: tup
             f'<div class="rb-num">{shown:.1f} / {total:.1f} GB</div></div>')
 
 
-def usage(eng, jm) -> dict[str, tuple[float, list[tuple[str, float]]]]:
-    """{"VRAM"|"RAM"|"Disk": (total GB, [(block, GB), ...])}."""
+def usage(beat: dict, jm) -> dict[str, tuple[float, list[tuple[str, float]]]]:
+    """{"VRAM"|"RAM"|"Disk": (total GB, [(block, GB), ...])}; beat = the engine
+    worker's last heartbeat ({} when it is not running)."""
     out = {}
-    if torch.cuda.is_available():
-        free, total = (x / GB for x in torch.cuda.mem_get_info())
-        parts = model_parts(eng)
+    beat = beat or {}
+    if mem := _gpu_mem():
+        total, free = mem
+        parts = [(p, g) for p, g in beat.get("parts") or []]
         own = sum(g for _, g in parts)
-        cache = max(torch.cuda.memory_reserved() / GB - own, 0)
-        name = "SDXL" if eng.kind == "sdxl" else "Z-Image"
+        name = {"sdxl": "SDXL", "zimage": "Z-Image"}.get(beat.get("kind"), "engine")
         blocks = [(f"{name} {p}", g) for p, g in parts]
+        cache = max((beat.get("reserved") or 0) - own, 0)
         if cache > 0.05:
             blocks.append(("working memory", cache))
         gpu = _gpu_procs()
@@ -154,7 +132,7 @@ def usage(eng, jm) -> dict[str, tuple[float, list[tuple[str, float]]]]:
         out["VRAM"] = (total, blocks)
     m = psutil.virtual_memory()
     running = [j for j in jm.jobs.values() if j.status == "running" and j.proc]
-    blocks = [("app", _tree_rss(os.getpid()) - sum(_tree_rss(j.proc.pid) for j in running))]
+    blocks = [("app", _tree_rss(os.getpid()) - sum(_tree_rss(j.proc.pid) for j in running))]  # includes the engine worker
     blocks += [(f"job: {j.kind}", _tree_rss(j.proc.pid)) for j in running]
     blocks.append(("system + other", max((m.total - m.available) / GB - sum(g for _, g in blocks), 0)))
     out["RAM"] = (m.total / GB, blocks)
@@ -162,10 +140,11 @@ def usage(eng, jm) -> dict[str, tuple[float, list[tuple[str, float]]]]:
     return out
 
 
-def bars(eng, jm, preview: tuple[str, float] | None = None) -> str:
+def bars(beat: dict, jm, preview: tuple[str, float] | None = None) -> str:
+    loaded = bool((beat or {}).get("model_path"))
     rows = []
-    for name, (total, blocks) in usage(eng, jm).items():
-        if name == "VRAM" and preview and eng.pipe is not None:  # loading replaces the current model
+    for name, (total, blocks) in usage(beat, jm).items():
+        if name == "VRAM" and preview and loaded:  # loading replaces the current model
             blocks = [b for b in blocks if not b[0].startswith(("SDXL", "Z-Image", "working"))]
         rows.append(_bar(name, total, blocks, preview if name == "VRAM" else None))
     return '<div class="rb">' + "".join(rows) + "</div>"
@@ -177,11 +156,11 @@ _disk_cache: list = [0.0, None]
 def _disk() -> tuple[float, list[tuple[str, float]]]:
     """Folder sizes are walked at most every 15 s."""
     if time.time() - _disk_cache[0] > 15:
-        d = shutil.disk_usage("/content" if Path("/content").exists() else ".")
-        work = Path("/content/work")
-        blocks = [("models", _dir_gb(work / "models")), ("download cache", _dir_gb(HF_CACHE)),
-                  ("LoRAs + runs", _dir_gb(work / "loras") + _dir_gb(work / "runs")),
-                  ("datasets + outputs", _dir_gb(work / "datasets") + _dir_gb(work / "outputs"))]
+        from .paths import WORK
+        d = shutil.disk_usage(str(WORK.anchor))
+        blocks = [("models", _dir_gb(WORK / "models")), ("download cache", _dir_gb(HF_CACHE)),
+                  ("LoRAs + runs", _dir_gb(WORK / "loras") + _dir_gb(WORK / "runs")),
+                  ("datasets + outputs", _dir_gb(WORK / "datasets") + _dir_gb(WORK / "outputs"))]
         blocks.append(("system + venv", max((d.total - d.free) / GB - sum(g for _, g in blocks), 0)))
         _disk_cache[:] = [time.time(), (d.total / GB, blocks)]
     return _disk_cache[1]
