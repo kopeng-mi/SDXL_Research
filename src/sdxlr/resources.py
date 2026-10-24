@@ -157,7 +157,7 @@ def _disk() -> tuple[float, list[tuple[str, float]]]:
     """Folder sizes are walked at most every 15 s."""
     if time.time() - _disk_cache[0] > 15:
         from .paths import WORK
-        d = shutil.disk_usage(str(WORK.anchor))
+        d = shutil.disk_usage(str(WORK.resolve().anchor))
         blocks = [("models", _dir_gb(WORK / "models")), ("download cache", _dir_gb(HF_CACHE)),
                   ("LoRAs + runs", _dir_gb(WORK / "loras") + _dir_gb(WORK / "runs")),
                   ("datasets + outputs", _dir_gb(WORK / "datasets") + _dir_gb(WORK / "outputs"))]

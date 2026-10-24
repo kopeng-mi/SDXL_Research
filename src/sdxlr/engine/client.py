@@ -60,6 +60,7 @@ class EngineClient:
         self._busy = False
         self._killed = False  # set by kill(): the reader reports Cancelled, not death
         self._stale_checked = False
+        self.on_death = None  # guard hook: export logs when the worker dies
 
     # ---- state (from heartbeats) ----
     @property
@@ -180,6 +181,8 @@ class EngineClient:
                         self._reset()
                         if died:
                             log.info("engine worker died; last beat: " + json.dumps(self.beat)[:400])
+                            if self.on_death is not None:
+                                threading.Thread(target=self.on_death, daemon=True).start()
                         raise (WorkerDied(DEATH_MSG) if died else Cancelled("cancelled")) from None
                     t = ev.get("type")
                     if t == "beat":

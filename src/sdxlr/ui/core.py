@@ -82,7 +82,7 @@ OPEN_JOB: dict[str, str] = {}  # browser tab id -> job whose log Activity should
 def sample_usage_loop() -> None:
     """NVML, psutil and folder sizes are slow: measure here, never in the event loop."""
     import shutil
-    root = "/content" if Path("/content").exists() else str(WORK.anchor)
+    root = "/content" if Path("/content").exists() else str(WORK.resolve().anchor)
     last, last_t = shutil.disk_usage(root).used, time.time()
     while True:
         try:

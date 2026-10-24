@@ -100,6 +100,9 @@ def root():
     prev = {"loaded": loaded_label()}
 
     def side_tick():
+        from ..service import guard
+        while guard.EVENTS:  # watchdog notes become toasts wherever you are
+            ui.notify(guard.EVENTS.pop(0), type="warning", timeout=10000, close_button="Close")
         t = busy_task()
         job = running_job()
         # model
@@ -191,6 +194,8 @@ def main() -> None:
     ap.add_argument("--sync", action="store_true", help="pull presets + LoRAs from the sync repo at start")
     a = ap.parse_args()
     setup_logging()
+    from ..service import guard
+    guard.start(core.engc, core.jm)
     for d in (MODELS, LORAS, core.DATASETS, core.OUTPUTS, core.UPLOADS, core.THUMBS, presets.PRESETS):
         d.mkdir(parents=True, exist_ok=True)
     if a.sync and settings.get()["sync_repo"]:

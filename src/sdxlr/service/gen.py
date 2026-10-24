@@ -110,13 +110,18 @@ def _load(S, task) -> None:
     check_model(S)
     if S["kind"] == "Z-Image":
         tr, te = z_path(S["z_model"]), Z_ENCODERS.get(S["z_te"], S["z_te"])
+        from . import guard
+        guard.check_ram("Z-Image", None, tr, S["z_quant"], engc.beat, jm)
         if engc.needs_prefetch:
             _prefetch(task, "prefetch-zimage", tr, te)
         engc.call("load", {"kind": "zimage", "transformer": tr, "text_encoder": te, "te_quant": S["z_quant"]}, task)
     else:
+        mp = model_path(S["sdxl_model"])
+        from . import guard
+        guard.check_ram("SDXL", mp, None, S["z_quant"], engc.beat, jm)
         if S["vae"] == "fp16fix" and engc.needs_prefetch:
             _prefetch(task, "prefetch-sdxl")
-        engc.call("load", {"kind": "sdxl", "path": model_path(S["sdxl_model"]), "vae": S["vae"]}, task)
+        engc.call("load", {"kind": "sdxl", "path": mp, "vae": S["vae"]}, task)
 
 
 def _gpu_free() -> None:

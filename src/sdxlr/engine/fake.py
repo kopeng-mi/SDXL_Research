@@ -86,7 +86,8 @@ class FakeEngineClient:
     def _load(self, args, task):
         t = time.time()
         for stage, secs in (("Getting the model files", 0.4), ("Loading the model", 0.7), ("Moving to GPU", 0.3)):
-            task.set_stage(stage)
+            if task is not None:
+                task.set_stage(stage)
             self._sleep(secs, task)
         if args.get("kind") == "zimage":
             self.kind, self.model_path = "zimage", "|".join(["zimage", args["transformer"],
@@ -131,7 +132,8 @@ class FakeEngineClient:
         t0 = time.time()
         j = args["job"]
         steps = max(1, int(j.get("steps", 20)))
-        task.set_stage("Generating")
+        if task is not None:
+            task.set_stage("Generating")
         for i in range(1, steps + 1):
             task.step(i, steps)
             self._sleep(12 / steps, task)

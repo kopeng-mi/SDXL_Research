@@ -78,6 +78,7 @@ class JobManager:
         self._wake = threading.Event()
         self.on_gpu_job_start = on_gpu_job_start
         self.on_gpu_job_end = on_gpu_job_end
+        self.on_fail = None  # guard hook: export logs when a job fails
         threading.Thread(target=self._gpu_worker, daemon=True).start()
 
     # ---- public ----
@@ -128,13 +129,23 @@ class JobManager:
             self._wake.clear()
 
     def _run(self, job: JobInfo) -> None:
+        from ..paths import RUN
         job.status, job.started = "running", time.time()
         log.info(f"[job {job.id}] {job.title}: started")
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
                "TOKENIZERS_PARALLELISM": "false", "PYTHONPATH": str(REPO / "src")}
+        pid_f = RUN / "jobs" / f"{job.id}.pid"
         try:
             job.proc = subprocess.Popen(job.cmd, cwd=REPO, env=env, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT)
+            pid_f.parent.mkdir(parents=True, exist_ok=True)
+            pid_f.write_text(str(job.proc.pid))
+            from ..engine.worker import oom_score
+            try:  # Linux: a RAM crunch should kill this job before the web app
+                with open(f"/proc/{job.proc.pid}/oom_score_adj", "w") as f:
+                    f.write("800")
+            except OSError:
+                pass
             buf = b""
             while chunk := job.proc.stdout.read1(4096):
                 buf += chunk
@@ -145,10 +156,17 @@ class JobManager:
         except Exception as e:  # e.g. bad command
             job.log.append(f"{type(e).__name__}: {e}")
             job.returncode = -1
+        finally:
+            pid_f.unlink(missing_ok=True)
         job.ended = time.time()
         if job.status != "cancelled":
             job.status = "done" if job.returncode == 0 else "failed"
         log.info(f"[job {job.id}] {job.title}: {job.status} (exit {job.returncode}, {fmt_secs(job.ended - job.started)})")
+        if job.status == "failed" and self.on_fail is not None:
+            try:
+                self.on_fail(job)
+            except Exception as e:
+                log.info(f"on_fail hook failed: {e}")
 
     @staticmethod
     def _line(job: JobInfo, text: str) -> None:
