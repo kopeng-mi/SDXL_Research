@@ -41,7 +41,7 @@ def parse(text: str) -> list[tuple[str, float]]:
         elif tok == "[":
             square_stack.append(len(out))
         elif weight is not None and round_stack:
-            scale(round_stack.pop(), float(weight))
+            scale(round_stack.pop(), max(0.0, min(3.0, float(weight))))  # (x:9999) would wreck the image
         elif tok == ")" and round_stack:
             scale(round_stack.pop(), 1.1)
         elif tok == "]" and square_stack:

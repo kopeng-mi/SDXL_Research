@@ -53,6 +53,9 @@ async def do_generate(S, on_done=None):
         ui.notify(str(e), type="warning")
         return
     tool = S["tool"]
+    if S["kind"] == "Z-Image" and len(S["prompt"].split()) > 380:  # ~1.3 Qwen tokens per word; the encoder stops at 512
+        ui.notify("This prompt is very long: Z-Image reads about the first 500 tokens (~380 words); the rest is cut.",
+                  type="warning")
     task = act.start("generate", (S["prompt"] or TOOL_LABEL[tool])[:50])
     try:
         paths, info, seed = await run.io_bound(generate_blocking, copy.deepcopy(S), task)
@@ -371,7 +374,7 @@ def page(S):
                 ui.switch("Better blend (downloads 2 GB once)").bind_value(S, "better_blend")                     .bind_visibility_from(S, "kind", backward=lambda k: k == "Z-Image")                     .tooltip("Z-Image only: smoother joins where the new part meets the photo. A bit slower")
             blend_row.bind_visibility_from(S, "tool", backward=in_tools("area", "extend"))
             with ui.row().classes("items-center no-wrap gap-2") as tile_row:
-                ui.switch("Tile detail model (downloads 2 GB once)").bind_value(S, "tile_cn")                     .bind_visibility_from(S, "kind", backward=lambda k: k == "Z-Image")                     .tooltip("Z-Image only: adds detail that follows the photo more closely. A bit slower")
+                ui.switch("Tile detail model (downloads 2 GB once)").bind_value(S, "tile_cn")                     .bind_visibility_from(S, "kind", backward=lambda k: k == "Z-Image")                     .tooltip("Z-Image only: adds detail that follows the photo more closely. About twice as slow (a 2x took ~6 min on a T4)")
             tile_row.bind_visibility_from(S, "tool", backward=in_tools("upscale"))
             with ui.column().classes("w-full gap-1") as extend_box:
                 extend_row = ui.row().classes("w-full items-end no-wrap gap-2")
