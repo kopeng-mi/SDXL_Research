@@ -34,6 +34,7 @@ def test_embed_key() -> None:
     base = keys.z_embed_key("a cat", "", 0.0, te, [])
     assert keys.z_embed_key("a cat", "ugly", 0.0, te, []) == base, "negative ignored without guidance"
     assert keys.z_embed_key("a cat", "ugly", 3.0, te, []) != base, "negative counts with guidance"
+    assert keys.z_embed_key("a cat", "", 0.5, te, []) != base, "any cfg > 0 turns guidance on (needs negative embeds)"
     assert keys.z_embed_key("a cat", "", 0.0, te, [(dit_only, 0.8)]) == base, "a DiT-only LoRA does not change the embedding"
     assert keys.z_embed_key("a cat", "", 0.0, te, [(with_te, 0.8)]) != base
     assert keys.z_embed_key("a cat", "", 0.0, te, [(with_te, 0.8)]) != keys.z_embed_key("a cat", "", 0.0, te, [(with_te, 0.5)])

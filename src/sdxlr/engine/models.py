@@ -322,10 +322,10 @@ class Engine:
         generate, edits and every upscale tile. Returned as the pipeline's `prompt_embeds` arguments (one per image)."""
         key = z_embed_key(job.prompt, job.negative, job.cfg, self.model_path.split("|")[2:4], job.loras)
         if key not in self._embeds:
-            neg = job.negative if job.cfg > 1 and job.negative else None
+            cfg_on = job.cfg > 0  # diffusers 0.40 Z-Image: guidance (and its negative embeds) for any cfg > 0
             with torch.no_grad():
-                pe, ne = self.pipe.encode_prompt(job.prompt, device="cuda", do_classifier_free_guidance=job.cfg > 1,
-                                                 negative_prompt=neg)
+                pe, ne = self.pipe.encode_prompt(job.prompt, device="cuda", do_classifier_free_guidance=cfg_on,
+                                                 negative_prompt=(job.negative or None) if cfg_on else None)
             self._embeds[key] = (pe[0], ne[0] if ne else None)
             while len(self._embeds) > 8:
                 self._embeds.popitem(last=False)

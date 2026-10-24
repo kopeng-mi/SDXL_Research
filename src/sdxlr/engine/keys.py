@@ -13,11 +13,13 @@ TILING_MP = 1.5  # decodes over this many megapixels use the tiled VAE
 
 
 def z_embed_key(prompt: str, negative: str, cfg: float, te_id: tuple, loras: list[tuple[str, float]]) -> tuple:
-    """Cache key of a Z-Image prompt embedding: the prompt, the negative (only when guidance uses it), the text encoder
-    and the LoRAs that touch the text encoder (the usual DiT-only LoRA does not change the embedding)."""
+    """Cache key of a Z-Image prompt embedding: the prompt, whether guidance is on and its negative (diffusers 0.40
+    Z-Image pipelines turn guidance on for any cfg > 0, and then need negative embeds), the text encoder and the
+    LoRAs that touch the text encoder (the usual DiT-only LoRA does not change the embedding)."""
     te_loras = tuple(sorted((p, round(float(w), 4)) for p, w in loras
                             if p and w and loraformat.inspect(p).has_te))
-    return (prompt, negative if cfg > 1 else "", tuple(te_id), te_loras)
+    cfg_on = cfg > 0
+    return (prompt, cfg_on, negative if cfg_on else "", tuple(te_id), te_loras)
 
 
 def reuse_plan(old_key: str | None, transformer: str, text_encoder: str, te_quant: str) -> tuple[bool, bool]:
