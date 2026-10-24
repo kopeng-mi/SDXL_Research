@@ -22,7 +22,7 @@ from PIL import Image, PngImagePlugin
 
 from . import presets, settings
 from .engine import SAMPLERS, Z_ENCODERS, Z_MODELS, Engine, Job, ram, vram
-from .fetch import LORAS, MODELS, WORK, list_loras, list_models
+from .fetch import LORAS, MODELS, WORK, ZIMAGE, add_file, fetch_loras, list_loras, list_models, list_zimage
 from .jobs import JobManager, fmt_secs
 from .modes import ASPECTS, MODES, PONY_NEG, PONY_TAGS, STYLES, train_eta
 
@@ -65,6 +65,15 @@ def _model_path(name):
     return next((str(p) for p in list_models() if p.name == name), name)
 
 
+def _z_names():
+    return [*Z_MODELS, *(p.name for p in list_zimage())]
+
+
+def _z_path(name):
+    """Built-in preset, user checkpoint in the Library, or any link/path typed in."""
+    return Z_MODELS.get(name) or next((str(p) for p in list_zimage() if p.name == name), name)
+
+
 def _datasets():
     return sorted(p.name for p in DATASETS.iterdir() if p.is_dir()) if DATASETS.exists() else []
 
@@ -100,7 +109,7 @@ def load_model(kind, sdxl_model, vae, z_model, z_te, z_quant):
     with gpu_lock:
         try:
             if kind == "Z-Image":
-                msg = eng.load_zimage(Z_MODELS.get(z_model, z_model), Z_ENCODERS.get(z_te, z_te), z_quant)
+                msg = eng.load_zimage(_z_path(z_model), Z_ENCODERS.get(z_te, z_te), z_quant)
             else:
                 if not sdxl_model:
                     raise gr.Error("Pick an SDXL checkpoint (download one in Library).")
@@ -304,7 +313,7 @@ def run_compare(kind, sdxl_base, z_model, loras_sel, combos, strengths, prompt, 
     args = ["-m", "sdxlr.compare", "--name", name, "--strengths", *strengths.split(),
             "--prompt", prompt, "--negative", negative, "--steps", int(steps), "--cfg", cfg, "--seed", int(seed)]
     if kind == "Z-Image":
-        args += ["--zimage", "--model", z_model]
+        args += ["--zimage", "--model", _z_path(z_model)]
     else:
         if not sdxl_base:
             raise gr.Error("Pick an SDXL checkpoint.")
@@ -326,23 +335,41 @@ def show_grid(name):
 
 
 # ---------- Library ----------
+LIB_KINDS = {"LoRA / zip of LoRAs": "loras", "SDXL checkpoint": "model", "Z-Image model": "zimage"}
+
+
 def lib_download(link, kind):
     links = [s.strip() for s in (link or "").replace("\n", ",").split(",") if s.strip()]
     if not links:
-        raise gr.Error("Paste a link: HF org/repo/file, Civitai, or any https URL.")
+        raise gr.Error("Paste a link: HF org/repo/file or huggingface.co link, Civitai, any https URL, or a Drive path.")
     jm.submit("download", f"download: {', '.join(Path(x).name for x in links)[:60]}",
-              ["-m", "sdxlr.fetch", "model" if kind == "Model" else "loras", *links], gpu=False)
+              ["-m", "sdxlr.fetch", LIB_KINDS[kind], *links], gpu=False)
     gr.Info("Download started (see Jobs)")
+
+
+def lib_upload(files, kind):
+    if not files:
+        raise gr.Error("Drop .safetensors / .gguf files (or a zip of LoRAs).")
+    k, added = LIB_KINDS[kind], []
+    for f in files:
+        f = f if isinstance(f, str) else f.name
+        if k == "loras":
+            added += [p.name for p in fetch_loras(f)] if f.endswith(".zip") else [add_file(f, LORAS).name]
+        else:
+            added.append(add_file(f, MODELS if k == "model" else ZIMAGE).name)
+    gr.Info(f"Added {', '.join(added)}")
+    return lib_table(), None
 
 
 def lib_table():
     rows = [["model", p.name, f"{p.stat().st_size / 1e9:.2f} GB"] for p in list_models()]
+    rows += [["z-image", p.name, f"{p.stat().st_size / 1e9:.2f} GB"] for p in list_zimage()]
     rows += [["lora", p.name, f"{p.stat().st_size / 1e6:.0f} MB"] for p in list_loras()]
     return rows or [["", "nothing downloaded yet", ""]]
 
 
 def lib_delete(name):
-    for p in [*list_models(), *list_loras()]:
+    for p in [*list_models(), *list_zimage(), *list_loras()]:
         if p.name == (name or "").strip():
             p.unlink()
             gr.Info(f"Deleted {p.name}")
@@ -406,7 +433,7 @@ def build() -> gr.Blocks:
                     kind = gr.Radio(["Z-Image", "SDXL"], value="Z-Image", label="Model type", scale=1)
                     sdxl_model = gr.Dropdown(_model_names(), label="SDXL checkpoint", visible=False, scale=3)
                     vae = gr.Radio(["fp16fix", "model"], value="fp16fix", label="VAE", visible=False, scale=1)
-                    z_model = gr.Dropdown(list(Z_MODELS), value="turbo Q8", allow_custom_value=True, label="Z-Image model", scale=2)
+                    z_model = gr.Dropdown(_z_names(), value="turbo Q8", allow_custom_value=True, label="Z-Image model", scale=2)
                     z_te = gr.Dropdown(list(Z_ENCODERS), value="official", allow_custom_value=True, label="Text encoder", scale=2)
                     z_quant = gr.Radio(["nf4", "int8"], value="nf4", label="Encoder size", scale=1)
                     with gr.Column(scale=1, min_width=110):
@@ -568,7 +595,7 @@ def build() -> gr.Blocks:
                     with gr.Column(scale=2):
                         c_kind = gr.Radio(["SDXL", "Z-Image"], value="SDXL", label="Model type")
                         c_base = gr.Dropdown(_model_names(), label="SDXL checkpoint")
-                        c_z = gr.Dropdown(list(Z_MODELS), value="turbo Q8", label="Z-Image model")
+                        c_z = gr.Dropdown(_z_names(), value="turbo Q8", allow_custom_value=True, label="Z-Image model")
                         c_loras = gr.CheckboxGroup([p.name for p in list_loras()], label="LoRAs (one row each)")
                         c_combos = gr.Textbox(label="…or mixes, comma-separated",
                                               placeholder="face_a.safetensors:0.44+face_b.safetensors:0.44")
@@ -600,8 +627,10 @@ def build() -> gr.Blocks:
                         l_link = gr.Textbox(label="Paste links (comma or one per line)", lines=3,
                                             placeholder="cyberdelia/CyberRealisticPony/CyberRealisticPony_V17.0_FP16.safetensors\n"
                                                         "https://civitai.com/api/download/models/12345")
-                        l_kind = gr.Radio(["Model", "LoRA / zip of LoRAs"], value="LoRA / zip of LoRAs", label="Type")
+                        l_kind = gr.Radio(list(LIB_KINDS), value="LoRA / zip of LoRAs", label="Type")
                         l_go = gr.Button("Download", variant="primary")
+                        l_up = gr.File(label="…or upload files (.safetensors, .gguf, zip of LoRAs)", file_count="multiple",
+                                       file_types=[".safetensors", ".gguf", ".ckpt", ".zip"])
                         gr.Markdown("#### Sync (private HF repo)")
                         st = settings.get()
                         s_sync = gr.Textbox(st["sync_repo"], label="Sync repo for presets + LoRAs", placeholder="yourname/sdxlr-sync")
@@ -638,6 +667,14 @@ def build() -> gr.Blocks:
 
         jobs_df.select(_pick_job, None, job_id)
         job_cancel.click(cancel_job, job_id, jobs_df)
+        list_outs = [*lora_inputs[::2], sdxl_model, t_base, c_base, z_model, c_z, c_loras, ds_pick, t_ds]
+
+        def refresh_lists():
+            loras, models, zs = _lora_choices(), _model_names(), _z_names()
+            return ([gr.update(choices=loras)] * N_LORAS + [gr.update(choices=models)] * 3 + [gr.update(choices=zs)] * 2
+                    + [gr.update(choices=[p.name for p in list_loras()])] + [gr.update(choices=_datasets())] * 2)
+
+        l_up.upload(lib_upload, [l_up, l_kind], [l_table, l_up]).then(refresh_lists, None, list_outs)
         seen_done: set[str] = set()
 
         def tick(jid, ds):
@@ -647,25 +684,15 @@ def build() -> gr.Blocks:
             kinds = {j.kind for j in new}
             keep = gr.update()
             ds_view = show_dataset(ds)[:2] if kinds & {"import", "caption"} else (keep, keep)
-            if kinds & {"download", "train", "import"}:
-                loras, models = _lora_choices(), _model_names()
-                lists = ([gr.update(choices=loras)] * N_LORAS + [gr.update(choices=models)] * 3
-                         + [gr.update(choices=[p.name for p in list_loras()])] + [gr.update(choices=_datasets())] * 2)
-            else:
-                lists = [keep] * (N_LORAS + 3 + 1 + 2)
+            lists = refresh_lists() if kinds & {"download", "train", "import", "upload"} else [keep] * len(list_outs)
             return (_header(), _jobs_table(), job_log(jid), *ds_view, *lists)
 
         timer = gr.Timer(2.0)
         timer.tick(tick, [job_id, ds_pick],
-                   [header, jobs_df, job_out, ds_gallery, ds_info, *lora_inputs[::2], sdxl_model, t_base, c_base,
-                    c_loras, ds_pick, t_ds],
+                   [header, jobs_df, job_out, ds_gallery, ds_info, *list_outs],
                    concurrency_limit=None, show_progress="hidden")  # never waits behind a generation
 
-        def refresh_lists():
-            loras, models = _lora_choices(), _model_names()
-            return [gr.update(choices=loras)] * N_LORAS + [gr.update(choices=models)] * 3
-
-        ui.load(refresh_lists, None, [*lora_inputs[::2], sdxl_model, t_base, c_base])
+        ui.load(refresh_lists, None, list_outs)
         # dropdowns start on their first choice without firing .change: fill dependents once
         ui.load(show_dataset, ds_pick, ds_out)
         ui.load(train_estimate, eta_in, t_eta)
