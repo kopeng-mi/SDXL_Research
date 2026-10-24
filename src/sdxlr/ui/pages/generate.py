@@ -10,6 +10,7 @@ from nicegui import app, run, ui
 
 from ... import presets
 from ...activity import Cancelled, act
+from ... import loraformat
 from ...service import files
 from ..core import (ASPECTS, MAX_UPLOAD, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, engc,
                     err, generate_blocking, is_loaded, load_blocking, lora_names, model_names, picked_label, reuse,
@@ -188,24 +189,59 @@ def page(S):
             ui.label("LoRAs").classes("lbl")
             lora_box = ui.column().classes("w-full gap-1")
 
+        def add_trigger(t):
+            p = S["prompt"] or ""
+            if t.lower() not in p.lower():
+                S["prompt"] = f"{t}, {p}".strip(", ")
+
         def draw_loras():
             lora_box.clear()
+            fam = "zimage" if S["kind"] == "Z-Image" else "sdxl"
+            lo, hi = (0.0, 2.5) if fam == "zimage" else (-1.0, 2.0)
             names = lora_names()
+            usable, hidden = [], []
+            for n in names:
+                info = files.lora_info(n)
+                ok, why = loraformat.compatible(info, fam) if info else (True, "")
+                (usable if ok else hidden).append((n, why))
+            ok_names = [n for n, _ in usable]
             with lora_box:
                 for i, row in enumerate(S["loras"]):
                     with ui.row().classes("w-full items-center no-wrap gap-2"):
-                        ui.select(names, value=row[0] if row[0] in names else None, with_input=True,
-                                  on_change=lambda e, i=i: S["loras"][i].__setitem__(0, e.value)) \
+                        ui.select(ok_names, value=row[0] if row[0] in ok_names else None, with_input=True,
+                                  on_change=lambda e, i=i: (S["loras"][i].__setitem__(0, e.value), ui.timer(0.05, draw_loras, once=True))) \
                             .props("outlined dense label='Pick a LoRA'").classes("grow")
-                        sl = ui.slider(min=-1, max=2, step=0.01, value=row[1],
+                        sl = ui.slider(min=lo, max=hi, step=0.01, value=min(max(row[1], lo), hi),
                                        on_change=lambda e, i=i: S["loras"][i].__setitem__(1, e.value)) \
                             .classes("w-28").tooltip("Strength")
-                        ui.number(format="%.2f", step=0.05, min=-1, max=2).bind_value(sl, "value") \
-                            .props("outlined dense").style("width:76px").tooltip("From -1 to 2")
+                        ui.number(format="%.2f", step=0.05, min=lo, max=hi).bind_value(sl, "value") \
+                            .props("outlined dense").style("width:76px").tooltip(f"From {lo:g} to {hi:g}")
                         ui.button(icon="close", on_click=lambda i=i: (S["loras"].pop(i), draw_loras())) \
                             .props("flat dense round size=sm").tooltip("Remove")
+                    info = files.lora_info(row[0]) if row[0] else None
+                    if row[0] and row[0] not in ok_names:
+                        why = next((w for n, w in hidden if n == row[0]), "It is not in the LoRA list.")
+                        ui.label(f"{row[0]} can't be used here. {why}").classes("hint").style("color:var(--bad)")
+                    elif info:
+                        if info.trigger:  # a trigger word from training: one click puts it in the prompt
+                            with ui.row().classes("items-center gap-2"):
+                                ui.chip(info.trigger, icon="add", on_click=lambda t=info.trigger: add_trigger(t)) \
+                                    .props("clickable dense outline").tooltip("Add the trigger word to the prompt")
+                                ui.label(f"The trigger word \"{info.trigger}\" is not in your prompt") \
+                                    .classes("hint").style("color:var(--work)") \
+                                    .bind_visibility_from(S, "prompt", backward=lambda p, t=info.trigger: t.lower() not in (p or "").lower())
+                        elif info.tags:  # no sidecar (downloaded LoRA): the tags it was trained on
+                            with ui.row().classes("items-center gap-1"):
+                                ui.label("Trained on:").classes("hint")
+                                for t in info.tags[:4]:
+                                    ui.chip(t, on_click=lambda t=t: add_trigger(t)).props("clickable dense outline")
+                if hidden:
+                    ui.label("Not shown for this model: " + ", ".join(n for n, _ in hidden[:6]) + ("…" if len(hidden) > 6 else "")) \
+                        .classes("hint").tooltip("\n".join(f"{n}: {w}" for n, w in hidden))
                 if not names:
                     ui.label("No LoRAs yet. Add some in Library, or train one.").classes("hint")
+                elif not ok_names:
+                    ui.label("No LoRA here fits this model.").classes("hint")
                 elif any(not r[0] for r in S["loras"]):
                     ui.label("Rows without a LoRA picked are skipped.").classes("hint")
                 button("Add a LoRA", lambda: (S["loras"].append([None, 0.8]), draw_loras()), icon="add") \
@@ -555,6 +591,10 @@ def page(S):
     def tick():
         if S["tool"] and not S["src"]:
             S["src"] = S["image"]
+        sig = (S["kind"], tuple(lora_names()))  # the picker follows the model kind and new LoRAs
+        if shown.get("loras") != sig:
+            shown["loras"] = sig
+            draw_loras()
         if (shown["img"] != shown_img() or shown["tool"] != S["tool"] or shown["cmp"] != compare_key()
                 or (shown["need"] and files.display_ready(shown["need"]))):
             draw_canvas()

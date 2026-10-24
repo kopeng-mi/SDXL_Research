@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import history
+from .. import history, loraformat
 from ..fetch import list_loras, list_models, list_zimage
 from ..paths import COMPARE, DATASETS, LORAS, MODELS, OUTPUTS, RUNS, THUMBS, WORK, Z_MODELS, ZIMAGE
 
@@ -75,6 +75,12 @@ def lora_path(name: str) -> str | None:
     _ensure()
     with _lock:
         return next((str(p) for p in _cache["loras"] if p.name == name), None)
+
+
+def lora_info(name: str):
+    """loraformat.LoraInfo of a LoRA by file name, from the cache (None when unknown)."""
+    with _lock:
+        return _cache.get("lora_info", {}).get(name)
 
 
 def model_names() -> list[str]:
@@ -276,6 +282,7 @@ def _refresh(force: bool = False) -> None:
                     except OSError:
                         pass
             caps[d.name] = (len(imgs), n)
+    lora_info = {p.name: loraformat.inspect(p) for p in loras}  # headers only; cached by mtime
     zsizes = {q.name: q.stat().st_size / 2**30 for q in zimage if q.exists()}
     grids = {d.name: (d / "grid.png").stat().st_mtime for d in COMPARE.iterdir() if (d / "grid.png").exists()} \
         if COMPARE.exists() else {}
@@ -289,7 +296,7 @@ def _refresh(force: bool = False) -> None:
             break
     with _lock:
         _cache.update(history=his, prompts=prompts, loras=loras, models=models, zimage=zimage,
-                      datasets=sorted(ds), ds=ds, caps=caps, cap_text=cap_text, zsizes=zsizes, grids=grids)
+                      datasets=sorted(ds), ds=ds, caps=caps, cap_text=cap_text, zsizes=zsizes, grids=grids, lora_info=lora_info)
         pending = list(_want)
         _want.clear()
     # thumbs for every listed image, newest first, made here and not on the event loop

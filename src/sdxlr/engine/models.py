@@ -5,7 +5,7 @@ Rules (15 GB VRAM, ~12.7 GB RAM, no fast bf16):
   * fp16 everywhere; the fp16-fix VAE avoids NaNs without an fp32 VAE
   * each LoRA file is loaded once and cached as a named adapter; changing a
     weight only calls set_adapters (no reload); least recently used adapters
-    are dropped past MAX_ADAPTERS
+    are dropped past LORA_BUDGET_MB (sized from the file, not counted)
   * prompt embeddings are cached, so seed/step changes skip re-encoding
   * out of memory: free cache, turn on VAE tiling, retry once
   * inpaint and image-to-image reuse the loaded weights (from_pipe, fp16:
@@ -32,9 +32,10 @@ import torch
 from PIL import Image
 
 from ..paths import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, z_key
+from .. import loraformat
 from ..prompt import encode_sdxl
 
-MAX_ADAPTERS = 12
+LORA_BUDGET_MB = 1536  # VRAM the cached LoRA adapters may hold (a count of 12 ignores rank)
 
 
 @dataclass
@@ -111,6 +112,7 @@ class Engine:
         self.model_path: str | None = None
         self.vae_mode: str | None = None
         self.adapters: OrderedDict[str, str] = OrderedDict()  # path -> adapter name
+        self.adapter_mb: dict[str, float] = {}  # path -> size from the file header
         self._embeds: OrderedDict[tuple, dict] = OrderedDict()
         self._sampler: str | None = None
         self._inpaint = None
@@ -121,6 +123,7 @@ class Engine:
         self.pipe = self._inpaint = self._img2img = None
         self.kind = self.model_path = self._sampler = None
         self.adapters.clear()
+        self.adapter_mb.clear()
         self._embeds.clear()
         gc.collect()
         if torch.cuda.is_available():
@@ -203,13 +206,17 @@ class Engine:
         self._sampler = name
 
     # ---- LoRAs ----
-    def _adapter(self, path: str) -> str:
+    def _adapter(self, path: str, pinned: tuple = ()) -> str:
         if path in self.adapters:
             self.adapters.move_to_end(path)
             return self.adapters[path]
-        while len(self.adapters) >= MAX_ADAPTERS:
-            _, old = self.adapters.popitem(last=False)
-            self.pipe.delete_adapters([old])
+        mb = loraformat.inspect(path).size_mb
+        # drop the least recently used adapters (never one this request needs) until the new one fits the budget
+        for old in [p for p in self.adapters if p not in pinned]:
+            if sum(self.adapter_mb.values()) + mb <= LORA_BUDGET_MB:
+                break
+            self.pipe.delete_adapters([self.adapters.pop(old)])
+            self.adapter_mb.pop(old, None)
         name = "l" + hashlib.md5(path.encode()).hexdigest()[:10]
         p = Path(path)
         try:
@@ -222,10 +229,12 @@ class Engine:
                 pass
             raise
         self.adapters[path] = name
+        self.adapter_mb[path] = mb
         return name
 
     def set_loras(self, loras: list[tuple[str, float]]) -> None:
-        active = [(self._adapter(p), float(w)) for p, w in loras if p and w != 0]
+        pinned = tuple(p for p, w in loras if p and w != 0)
+        active = [(self._adapter(p, pinned), float(w)) for p, w in loras if p and w != 0]
         if active:
             self.pipe.enable_lora()
             self.pipe.set_adapters([n for n, _ in active], adapter_weights=[w for _, w in active])

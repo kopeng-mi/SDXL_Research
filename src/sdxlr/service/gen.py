@@ -23,6 +23,7 @@ from ..activity import act, log
 from ..engine import client as engine_client
 from ..fetch import LORAS, fetch
 from ..paths import Z_ENCODERS, z_key
+from .. import loraformat
 from . import masks
 from .files import lora_path, model_path, z_path
 from .jobs import gpu_lock, jm
@@ -31,6 +32,7 @@ engc = engine_client.make()  # the engine for the web process (fake when SDXLR_F
 
 TOOL_LABEL = {None: "Generate", "area": "Change the painted part", "whole": "Change the whole image",
               "extend": "Extend the image", "upscale": "Upscale"}
+LORA_RANGE = {"sdxl": (-1.0, 2.0), "zimage": (0.0, 2.5)}  # strength limits per model
 EDIT_TOOLS = ("area", "whole", "extend")  # these make 1 to 4 variations
 
 
@@ -135,6 +137,7 @@ def _load(S, task) -> None:
         engc.call("load", {"kind": "zimage", "transformer": tr, "text_encoder": te, "te_quant": S["z_quant"]}, task)
     else:
         mp = model_path(S["sdxl_model"])
+        loraformat.check_sdxl_checkpoint(mp)  # a Flux or SD 1.5 file gets a plain refusal, not a load error
         if engc.needs_prefetch:
             _check_ram("SDXL", mp, None, S["z_quant"])
         if S["vae"] == "fp16fix" and engc.needs_prefetch:
@@ -181,8 +184,13 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
         m = modes.MODES[kind][S["mode"]]
         steps, cfg, sampler = (S["steps"], S["cfg"], S["sampler"]) if S["use_adv"] else \
             (m["steps"], m["cfg"], m.get("sampler", S["sampler"]))
-        loras = [(lora_path(n), max(-1.0, min(2.0, float(w)))) for n, w in S["loras"] if n and w]  # -1..2
+        lo, hi = LORA_RANGE[kind]
+        loras = [(lora_path(n), max(lo, min(hi, float(w)))) for n, w in S["loras"] if n and w]
         loras = [(p, w) for p, w in loras if p]
+        for p, _ in loras:  # a LoRA made for the other model would load into nothing or fail halfway
+            ok, why = loraformat.compatible(loraformat.inspect(p), kind)
+            if not ok:
+                raise ValueError(f"{Path(p).name}: {why} Remove it or pick the other model.")
         if kind == "sdxl" and m.get("lora") and engc.needs_prefetch:
             task.set_stage("Getting the Fast mode LoRA")
             loras.append((str(fetch(m["lora"][0], LORAS)), m["lora"][1]))

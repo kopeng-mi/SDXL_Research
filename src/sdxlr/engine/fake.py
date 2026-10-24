@@ -115,6 +115,13 @@ class Engine:
                     status: Callable[[str], None] = lambda s: None) -> str:
         return self._load("zimage", z_key(transformer, text_encoder, te_quant), None, status, "loaded Z-Image (fake)")
 
+    def _use(self, loras) -> None:
+        """Remember the LoRAs a request used, like the real adapter cache (the sidebar and the picker flow see them)."""
+        for p, w in loras or []:
+            if p and w != 0:
+                self.adapters[p] = "fake"
+                self.adapters.pop(next(iter(self.adapters))) if len(self.adapters) > 12 else None
+
     def _steps(self, steps: int, on_step, secs: float = 12.0) -> None:
         for i in range(1, steps + 1):
             if on_step:
@@ -127,6 +134,7 @@ class Engine:
         if os.environ.get("SDXLR_FAKE_CRASH") and _once("crash"):
             os._exit(9)  # like the kernel's OOM kill: no goodbye on the pipe
         t0 = time.time()
+        self._use(job.loras)
         self._steps(max(1, int(job.steps)), job.on_step)
         seed = job.seed if job.seed >= 0 else random.randrange(2**31 - 1)
         w, h = job.image.size if job.image is not None else (job.width, job.height)
@@ -136,6 +144,7 @@ class Engine:
     def inpaint_crop(self, job: Job, crop: Image.Image, mask: Image.Image) -> Image.Image:
         if self.pipe is None:
             raise RuntimeError("no model loaded")
+        self._use(job.loras)
         self._steps(max(1, int(job.steps)), job.on_step, secs=4.0)
         return _img(crop.width, crop.height, "edit fake")
 
@@ -144,6 +153,7 @@ class Engine:
         if self.pipe is None:
             raise RuntimeError("no model loaded")
         t0 = time.time()
+        self._use(job.loras)
         w, h = int(job.image.width * scale), int(job.image.height * scale)
         tiles = max(1, (w // tile + 1) * (h // tile + 1))
         self._steps(tiles, on_tile, secs=8.0)
