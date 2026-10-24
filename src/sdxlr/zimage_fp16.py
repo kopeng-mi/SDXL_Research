@@ -36,18 +36,33 @@ def _clamp_input(_mod, args):
     return (_clamp(args[0]), *args[1:])
 
 
-def patch(transformer) -> int:
-    """Register the hooks on every ZImageTransformerBlock; returns blocks patched."""
-    from diffusers.models.transformers.transformer_z_image import ZImageTransformerBlock
+def _clamp_output(_mod, _inp, out):
+    return _clamp(out)
 
+
+def _is_block(m) -> bool:
+    """A Z-Image transformer block, found by structure: the ControlNet has its own copies of the class
+    (ZImageControlTransformerBlock) with the same attention, feed-forward and norms."""
+    ff = getattr(m, "feed_forward", None)
+    return (hasattr(m, "attention") and hasattr(m, "attention_norm2") and hasattr(m, "ffn_norm2")
+            and hasattr(ff, "w3") and hasattr(ff, "w2"))
+
+
+def patch(module) -> int:
+    """Register the hooks on every Z-Image block of a transformer or ControlNet; returns blocks patched.
+    Idempotent: the ControlNet shares blocks with the transformer (from_transformer), which are only patched once.
+    ControlNet blocks also get their `after_proj` output clamped (it feeds the hint added to the transformer)."""
     n = 0
-    for block in transformer.modules():
-        if not isinstance(block, ZImageTransformerBlock):
+    for block in module.modules():
+        if getattr(block, "_fp16_patched", False) or not _is_block(block):
             continue
         block.feed_forward.w3.register_forward_hook(_scale(32))
         block.feed_forward.w2.register_forward_pre_hook(_clamp_input)
         block.attention.register_forward_hook(_scale(4))
         block.attention_norm2.register_forward_pre_hook(_clamp_input)
         block.ffn_norm2.register_forward_pre_hook(_clamp_input)
+        if hasattr(block, "after_proj"):
+            block.after_proj.register_forward_hook(_clamp_output)
+        block._fp16_patched = True
         n += 1
     return n
