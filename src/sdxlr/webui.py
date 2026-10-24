@@ -413,7 +413,7 @@ PAGES = [("Generate", "/"), ("Dataset", "/dataset"), ("Train", "/train"), ("Comp
 
 
 def field(el, S, key):
-    return el.bind_value(S, key).props("outlined dense")
+    return el.bind_value(S, key).props("outlined dense").classes("w-full")
 
 
 def page_generate(S, sheet):
@@ -671,7 +671,7 @@ def page_dataset(S, sheet):
                 staged_l.text = f"{len(staged)} files ready to import"
 
             ui.upload(label="Drop a zip or photos (captions optional: same-name .txt)", multiple=True,
-                      auto_upload=True, on_upload=on_up).props("flat bordered accept=.zip,.txt,image/*").classes("w-full")
+                      auto_upload=True, on_upload=on_up).props("flat bordered color=grey-9 accept=.zip,.txt,image/*").classes("w-full")
             staged_l = ui.label().classes("t-small muted")
             field(ui.textarea("Or paste links", placeholder="https://..., org/repo/file.zip, /content/drive/MyDrive/..., test"),
                   S, "ds_link").props("autogrow")
@@ -907,7 +907,7 @@ def page_library(S, sheet):
                 draw()
 
             ui.upload(label="Or upload files (up to about 100 MB each through the link; use links for big models)",
-                      multiple=True, auto_upload=True, on_upload=on_up).props("flat bordered accept=.safetensors,.gguf,.ckpt,.zip").classes("w-full")
+                      multiple=True, auto_upload=True, on_upload=on_up).props("flat bordered color=grey-9 accept=.safetensors,.gguf,.ckpt,.zip").classes("w-full")
             ui.label("Private HF files and Civitai need HF_TOKEN and CIVITAI_TOKEN in Colab Secrets.").classes("t-small muted")
             with ui.expansion("Sync presets and LoRAs with a private HF repo").classes("w-full"):
                 st = settings.get()
@@ -991,7 +991,7 @@ def page_history(S, sheet):
                     ui.notify(err(ex), type="negative")
 
             ui.upload(label="Load settings from a .json or a PNG made here", auto_upload=True, on_upload=up) \
-                .props("flat bordered accept=.json,.png").classes("w-96")
+                .props("flat bordered color=grey-9 accept=.json,.png").classes("w-96")
         grid = ui.row().classes("gap-3")
 
     def show(p: Path, m: dict):
@@ -1179,7 +1179,7 @@ def root():
         return build
 
     with ui.column().classes("w-full p-6").style("max-width:1400px"):
-        ui.sub_pages({p: page(b) for p, b in BUILDERS.items()})
+        ui.sub_pages({p: page(b) for p, b in BUILDERS.items()}).classes("w-full")
 
     def side_tick():
         # model
