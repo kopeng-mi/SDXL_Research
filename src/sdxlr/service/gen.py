@@ -151,7 +151,9 @@ def _load(S, task) -> None:
 def _gpu_free() -> None:
     if jm.gpu_busy() or not gpu_lock.acquire(blocking=False):
         j = running_job()
-        raise ValueError(f"The GPU is busy with \"{j.title if j else 'a job'}\". Try again when it finishes.")
+        from .jobs import fmt_secs
+        left = f" (about {fmt_secs(j.eta)} left)" if j and j.eta else ""
+        raise ValueError(f"The GPU is busy with \"{j.title if j else 'a job'}\"{left}. Try again when it finishes.")
 
 
 def load_blocking(S, task) -> str:

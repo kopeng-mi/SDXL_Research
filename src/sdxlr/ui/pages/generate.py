@@ -77,7 +77,7 @@ async def do_generate(S, on_done=None):
 def page(S):
     with ui.row().classes("w-full gap-8 no-wrap items-start two-col"):
         left = ui.column().classes("gap-4").style("width:500px; min-width:400px")
-        right = ui.column().classes("gap-3").style("flex:1 1 0; min-width:0")
+        right = ui.column().classes("gap-3").style("flex:1 1 0; min-width:0; position:sticky; top:12px")
 
     # ----- model card -----
     with left:
@@ -330,6 +330,7 @@ def page(S):
         draw_extend()
 
     with right:
+        toolbar = ui.row().classes("w-full items-center gap-2 no-wrap")
         banner = ui.column().classes("banner w-full gap-2")
         with banner:
             tool_l = ui.label().classes("t-small")
@@ -431,23 +432,26 @@ def page(S):
                     return
                 S.update(image=p, src=p if S["tool"] else None, mask_id=None)
                 draw_canvas()
-                ui.notify("Image added. Pick what to do with it below", type="positive")
+                ui.notify("Image added. Pick what to do with it above the image", type="positive")
 
             up = ui.upload(auto_upload=True, on_upload=on_upload, max_files=1, max_file_size=MAX_UPLOAD,
                            on_rejected=lambda: ui.notify("That file is over 50 MB. Export it smaller first.", type="warning")) \
                 .props("accept=image/* hide-upload-btn").style("display:none")
-            button("Upload an image", lambda: up.run_method("pickFiles"), icon="upload")
+            up_btn = button("Upload", lambda: up.run_method("pickFiles"), icon="upload").tooltip("Upload a photo to edit")
         with ui.row().classes("w-full items-center gap-2") as actions:
-            reuse_b = button("Reuse its settings", lambda: reuse_shown(), icon="settings_backup_restore")
+            reuse_b = button("Reuse", lambda: reuse_shown(), icon="settings_backup_restore").tooltip("Fill the form with the settings of this image")
             area_b = button("Change a part", lambda: set_tool("area"), icon="brush")
-            whole_b = button("Change the whole image", lambda: set_tool("whole"), icon="auto_fix_high")
+            whole_b = button("Change all", lambda: set_tool("whole"), icon="auto_fix_high").tooltip("Change the whole image with your prompt")
             extend_b = button("Extend", lambda: set_tool("extend"), icon="aspect_ratio")
             up_b = button("Upscale", lambda: set_tool("upscale"), icon="open_in_full")
             ui.space()
-            dl_b = button("Download", lambda: ui.download.file(S["image"]), icon="download")
-            clear_b = button("Clear", lambda: (S.update(image=None, tool=None, mask_id=None), draw_canvas()), icon="close") \
+            dl_b = button("", lambda: ui.download.file(S["image"]), icon="download").tooltip("Download the PNG")
+            clear_b = button("", lambda: (S.update(image=None, tool=None, mask_id=None), draw_canvas()), icon="close") \
                 .tooltip("Empty the image area. The image stays in History")
         recent = ui.row().classes("w-full gap-2")
+        up_btn.move(toolbar)
+        actions.move(toolbar)
+        actions.classes(remove="w-full", add="grow")
 
     def reviewing() -> bool:
         return bool(pending["result"]) and pending["result"] == S["image"]

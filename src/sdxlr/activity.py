@@ -135,10 +135,13 @@ class Activity:
         last_t, logged, rate = time.time(), 0.0, 0.0
         while t.status == "running":
             time.sleep(1.0)
+            if t.status != "running":  # finished while asleep: never write a download note onto a done task
+                break
             used, now = shutil.disk_usage(root).used, time.time()
             rate = 0.7 * rate + 0.3 * max(used - last, 0) / (now - last_t)
             last, last_t = used, now
-            if rate > 1 << 20:  # > 1 MB/s: something is downloading
+            fetching = t.proc is not None or t.stage.startswith("Getting")  # saves and previews also write to disk
+            if fetching and rate > 1 << 20:  # > 1 MB/s while fetching: a download
                 t.detail = f"Downloading: {gb(used - start)} so far, {rate / 2**20:.0f} MB/s"
                 if now - logged > LOG_EVERY:
                     logged = now

@@ -66,6 +66,8 @@ def root():
             with ui.column().classes("w-full gap-2 section"):
                 model_l = ui.html("", sanitize=False).classes("t-small")
                 mem = ui.html("", sanitize=False).classes("w-full")
+                link_l = ui.label().classes("t-small muted").tooltip(
+                    "How your device reaches this VM. Relayed connections add lag; direct is best")
             with ui.column().classes("w-full gap-1 section"):
                 task_l = ui.label("Nothing running").classes("t-small muted")
                 task_d = ui.label().classes("t-small muted tnum")
@@ -137,6 +139,10 @@ def root():
                          + bar_html(total, blocks, pv if nm == "VRAM" else None))
         if pv and "VRAM" in USAGE:
             parts.append(f'<div class="hint">Striped: about {pv[1]:.1f} GB for the picked model</div>')
+        from .. import tailnet
+        link = tailnet.LINK["text"]
+        set_if(link_l, "text", link)
+        link_l.set_visibility(bool(link))
         set_if(mem, "content", '<div style="display:flex;flex-direction:column;gap:6px">' + "".join(parts) + "</div>")
         # current work
         queued = sum(j.status == "queued" for j in jm.jobs.values())
@@ -233,6 +239,7 @@ def main() -> None:
         def ts_up():
             try:
                 announce(tailnet.up(a.port) + "  (on a device signed in to your Tailscale)")
+                threading.Thread(target=tailnet.watch_links, daemon=True).start()
             except Exception as e:
                 log.info(f"Tailscale failed: {e}")
                 log.info(f"Add TS_AUTHKEY in Colab Secrets, run Setup again, then Launch. Local address: http://127.0.0.1:{a.port}")

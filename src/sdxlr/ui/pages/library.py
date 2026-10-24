@@ -91,6 +91,9 @@ def page(S):
                 button("Free disk space", lambda: free(), icon="cleaning_services")
             ui.label("Free disk space deletes cached downloads that are not in use; they download again when needed.") \
                 .classes("hint")
+            ui.label("This VM is temporary: when the Colab session ends, everything on it is gone. Trained LoRAs and "
+                     "datasets survive only in your HF sync repo (set in the notebook) or as downloads.") \
+                .classes("hint").style("color:#E8A33D")
             with ui.row().classes("w-full items-center gap-2"):
                 ui.space()
                 button("Download all LoRAs as a zip", lambda: download_loras(), icon="folder_zip")

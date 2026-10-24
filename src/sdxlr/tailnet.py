@@ -86,3 +86,37 @@ def _address(port: int) -> str:
     ip = (st["Self"].get("TailscaleIPs") or ["?"])[0]
     name = dns.split(".")[0] if dns else HOSTNAME
     return f"http://{name}:{port}  (or http://{ip}:{port}, full name {dns})"
+
+
+LINK: dict = {"text": ""}  # the sidebar's connection line, refreshed by watch_links() (never in a UI timer)
+
+
+def links() -> list[tuple[str, str]]:
+    """[(device, "direct" | "relayed via <region>")] for peers with an active connection to this VM.
+    Relayed (DERP) connections add lag: worth knowing when the page feels slow."""
+    st = json.loads(cli("status", "--json", timeout=10).stdout or "{}")
+    out = []
+    for peer in (st.get("Peer") or {}).values():
+        if not (peer.get("Online") and peer.get("Active")):
+            continue
+        name = (peer.get("HostName") or peer.get("DNSName") or "?").split(".")[0]
+        out.append((name, "direct" if peer.get("CurAddr") else f"relayed via {peer.get('Relay') or 'DERP'}"))
+    return out
+
+
+def watch_links(every: float = 15.0) -> None:
+    """Background loop for the sidebar line: "Connection: direct" or "relayed via fra" (several devices: listed)."""
+    import time
+    while True:
+        try:
+            ls = links()
+            if not ls:
+                LINK["text"] = ""
+            elif len(ls) == 1:
+                LINK["text"] = f"Connection: {ls[0][1]}"
+            else:
+                LINK["text"] = "Connections: " + ", ".join(f"{n} {k}" for n, k in ls)
+        except Exception:
+            LINK["text"] = ""
+        time.sleep(every)
+
