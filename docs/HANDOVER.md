@@ -1,88 +1,48 @@
 # Handover
 
-Snapshot for picking the work up later. Read with `docs/PLAN.md` (decisions,
-measured T4 numbers, bugs fixed, UI design).
+Read with `docs/PLAN.md` (decisions, T4 numbers). Terse on purpose.
 
-## Where things are
+## State
+- Repo `kopeng-mi/SDXL_Research` (public, no personal data). Local: `C:\Users\raman\Documents\MyGit\temps\SDXL_Research`.
+- Branch **`step3-nicegui`** (pushed, last `121a242`). Built on `step2-polish` → `step1-scaffold`. `main` = init only. **Merge pending** (user: after testing; no squash; then set `cells/00_setup.py` BRANCH back to `main`).
+- Notebook = `cells/00_setup.py` + `cells/10_launch.py` → `python tools/build_notebook.py`. Launch runs `nb.serve(["-m","sdxlr.webui",...])` (auto-restart on crash).
+- Gradio `app.py` is dead code (still in repo, gradio still pinned): remove when NiceGUI is final.
 
-| Item | Location |
+## Code map (new parts)
+| File | Role |
 |---|---|
-| Repo | `kopeng-mi/SDXL_Research` (public; code only, no personal data) |
-| Work branch | `step2-polish` (on top of `step1-scaffold`, pushed). `main` = first commit only; merge after the user's Colab web test |
-| Local clone | `C:\Users\raman\Documents\MyGit\temps\SDXL_Research` |
-| Old reference notebooks | same folder, git-ignored (personal data), kept locally |
-| Test scripts (not in repo) | `C:\Users\raman\Documents\MyGit\temps\colab_tests\` |
-| Reference clones/sources | `C:\Users\raman\Documents\MyGit\temps\refs\` (old `lora_backend_sdxl`, diffusers/musubi source snippets) |
-| Submodules | `vendor/sd-scripts` (kohya v0.12.2), `vendor/musubi-tuner` (v0.3.6) |
+| `webui.py` | shim → `ui/frame.main` |
+| `ui/core.py` | state (`DEFAULTS`, `STATES` per 4-digit session, autosave), engine/jobs singletons, checks (`check_*`, raise ValueError with user text), `generate_blocking` (tools: None/area/whole/upscale), `submit_*` jobs, `save_upload`, `shred`, `job_error`, usage + disk-rate sampler threads |
+| `ui/theme.py` | CSS (darkroom palette, IBM Plex Sans, no motion), `labeled`, `seg`, `main_button`, `button`, `confirm`, `JobLine` |
+| `ui/frame.py` | sidebar (nav, model, VRAM/RAM/disk bars, current task + Cancel, session menu), failure/done toasts, startup, Tailscale |
+| `ui/pages/*.py` | generate, dataset, train, compare, library, history, activity |
+| `engine.py` | + status/step callbacks, img2img (Z + SDXL), `upscale()` tiled 1024/128 overlap, `empty_cache` after each image |
+| `activity.py` | in-process Task (stage, steps, cancel, child proc), disk-rate download watcher, logging to `WORK/logs/app.log` + stdout |
+| `jobs.py` | + per-job logs `logs/jobs/<id>.log`, throttled log lines |
+| `fetch.py` | + `prefetch-zimage/-sdxl` (child process so Cancel kills downloads), HF blob links, uploads, `zimage_custom` |
+| `hfsync.py` | auto resume: HF `NAME/ckpt/` (latest LoRA+state only) + `NAME/dataset/` |
+| `tailnet.py` | tailscaled userspace, `TS_AUTHKEY`, hostname `sdxlr`, logout on shutdown |
+| `history.py` / `session.py` / `resources.py` | image JSON sidecars; session codes (`latest()` auto-continue); usage blocks (NVML) |
 
-## Code map (`src/sdxlr/`)
+## Access
+Tailscale only (Cloudflare removed: kept breaking). Open `http://sdxlr:7860`. Non-ephemeral key → each new VM is `sdxlr-N` (Colab kill skips logout). User will make an **ephemeral** key. **The test key in chat history must be deleted** (user said they will).
 
-| Module | Role |
-|---|---|
-| `bootstrap.py` | stdlib-only; uv-managed Python 3.12 venv at `/content/venv`; installs kohya reqs, musubi, this package with `uv pip install`; idempotent stamp |
-| `nb.py` | kernel-side helpers: stream child output into cells, export `HF_TOKEN`/`CIVITAI_TOKEN` from Colab Secrets |
-| `app.py` | Gradio 6 UI, 5 tabs + Jobs; GPU lock; auto-refresh on job finish |
-| `jobs.py` | job queue: one GPU job at a time, CPU jobs alongside; progress/ETA/cancel; unload engine before GPU jobs |
-| `engine.py` | SDXL + Z-Image generation; LoRA adapter cache; prompt cache; OOM retry; inpaint; T4 fixes |
-| `prompt.py` | A1111 weights, >77-token prompts, clip skip (A1111 numbering) for SDXL |
-| `zimage_fp16.py` | hooks that stop Z-Image fp16 overflow (black images) on T4 |
-| `caption.py` | Qwen3-VL 4B/2B, JoyCaption (nf4); identity prompt; trigger + class word |
-| `train.py` / `train_zimage.py` | kohya SDXL / musubi Z-Image LoRA training (+ diffusers conversion) |
-| `compare.py` | LoRA x strength grid, mixes, resume-safe |
-| `data.py` / `fetch.py` | dataset import (zip/images/URL/HF/Drive, captions optional); model/LoRA downloads incl. Civitai |
-| `presets.py` / `settings.py` / `modes.py` | JSON presets + HF sync; UI-set repo names; modes, aspects, styles, training ETA |
-| `resources.py` | header bars (VRAM/RAM/disk by named block), load estimate, clear download cache |
-| `session.py` | 4-digit session codes, UI state in `/content/work/sessions/` |
-| `hfsync.py` | auto resume: dataset + latest LoRA/state in the private HF repo, older checkpoint removed |
+## Measured on T4 (new UI)
+First Z-Image Q8 load+gen 5m08s (cancel mid-download works, resumes). Speed 38 s, Quality 49 s, area change 37 s. Qwen captions 5m39s first run (mostly 8.8 GB download). VRAM Q8 run: DiT 6.7, TE nf4 2.4, VAE 0.2, cache 5.1 GB (now freed after each image).
 
-Notebook = `cells/00_setup.py` + `cells/10_launch.py`, built into `notebook.ipynb`
-by `python tools/build_notebook.py` (edit cells, never the .ipynb).
+## Open (user wants to rethink these next)
+1. **OOM / VM froze** during first img2img test on T4 (log lost). Suspects: uploads not downscaled (cap ~1.2 MP for area/whole), `fetch prefetch` imports `engine` → torch (+1-2 GB RAM; move constants to a light module), no free-RAM guard. Add RAM/VRAM log every 30 s and copy logs off-VM on failure.
+2. **Rethink img2img UX**: prompt + masking (brush, not only boxes), whole/area/upscale in one clear flow. Untested on real GPU: whole-image, upscale, SDXL img2img.
+3. **Rethink UI** generally (user found it clunky; two Haiku user tests done, most findings fixed).
+4. Optimization: optional TE unload after encode (2.4 GB), VAE tiling for peak, smaller GGUF.
+5. Small: stage text during download, image swaps late over slow link, dataset tile heights, Haiku leftovers (menu a11y, import count 0/6 vs 5, Activity "Done" row keeps download text).
+6. Still unproven: Z-Image identity LoRA quality (needs user's real run), auto resume (needs HF token), 768 px Z training.
 
-## Status
+## Testing workflow
+- Local UI without GPU: `colab_tests\dev_ui.py` (fakes engine, load, jobs; work dir `colab_tests\dev_work`, port 7870). Run: `uv run --no-project --with nicegui==3.18.0 --with pyyaml --with psutil --with huggingface_hub --with pillow --with toml --with numpy python dev_ui.py`. Real jobs are faked (they once downloaded 0.9 GB to `C:\content`).
+- Colab: `colab new -s t4 --gpu T4`; upload key to `/content/.tskey`; `colab exec -f colab_tests\_ts_start.py` (clones branch, bootstrap, webui); poll `_ts_chk.py`; `PYTHONIOENCODING=utf-8` for exec. Browser: `agent-browser --session X` on `http://sdxlr[-N]:7860` (this PC is on the tailnet).
+- Gotchas: Git Bash heredocs turn `\\n` into a real newline (write edit scripts with the Write tool); `pkill -f name` matches its own shell (use `name[x]`); port 8080 = Colab Jupyter, never expose; router DNS sometimes refuses new VM hosts (new session fixes).
+- Leftover: empty `C:\content` folder (tool blocks deleting it; user: `rm C:\content`).
 
-Working and tested on T4: venv, captions (Qwen3-VL 4B), SDXL training,
-SDXL generation + LoRAs + inpaint, compare grid, Z-Image Turbo generation
-(fp16 fix), Z-Image LoRA training at 512 px, LoRA conversion + loading on Turbo,
-Z-Image inpaint.
-
-Tested on CPU VM through a browser: new UI renders; dataset import job with
-auto-refresh; caption editor; Library download; preset save/load.
-
-## Open items (in order)
-
-1. User tests from Colab web: Z-Image identity run on their photos with auto
-   resume (HF_TOKEN in Colab Secrets). Auto resume and HF dataset sync are
-   untested (no token on the agent's VM).
-2. 768 px Z-Image training untested (estimate only).
-3. Optional: Setup "prefetch" of usual models.
-4. Merge `step2-polish` into `main` (no squash) after that test; setup cell
-   default branch is `main`.
-
-## Testing workflow (agent notes)
-
-- Colab CLI: `colab new -s <name> [--gpu T4]`, `colab upload/download`,
-  `colab console -s <name>`, `colab stop`. Free account: T4 ~5 h, use the CPU VM
-  for anything that does not need a GPU, stop sessions when done.
-- Your router's DNS sometimes refuses new VM hostnames ("getaddrinfo failed"):
-  stop the session and create a new one. Run `colab exec` with
-  `PYTHONIOENCODING=utf-8` or it crashes printing progress bars.
-- `colab exec` drops long cells (10 s read timeout): start long jobs detached on
-  the VM (`{ nohup bash -c "..." > /content/logs/x.log 2>&1 & }`) and poll.
-- Drive the VM through `colab console` in the Herdr side pane (`wK:pE`). That
-  pane's local shell is **nushell**: check for the VM prompt (`/content#`) before
-  sending bash. `colab_tests/vm.sh` has a guarded `vm 'cmd' MARK` helper.
-- Don't scrape the console screen for results: write them to a file on the VM
-  and `colab download` it (screen redraws and echoed commands cause false matches).
-- Git Bash rewrites `/content/...`: prefix `MSYS_NO_PATHCONV=1` for colab upload/download.
-- UI checks: run the app with `--share` on the VM, then `agent-browser` (named
-  session) to open the gradio.live link, click, and screenshot.
-
-## User preferences (from their global instructions)
-
-- Plan first for non-trivial work; ask numbered questions in chat (not the
-  question tool), mark the recommended option; terse replies like `1:1 2:2`.
-- Replies: answer first, short, plain words, bold key terms, no filler.
-- Ask before installing packages, deleting big things, or git history/remote
-  changes beyond what was approved (pushing the work branch is approved).
-- Conventional commits, small and scoped; no AI co-author line.
-- Supporting commands/scripts for the user go in chat in **nushell**.
+## User preferences
+Plan first; numbered questions in chat (`Q1. ... 1. (recommended)`), terse answers like `36:2`. Short plain replies, bold key terms, no filler. Ask before new packages, big deletes, git remote/history (pushing work branches is fine). Small conventional commits, no co-author. Nushell for commands. Free Colab: stop VMs when idle. Subagents only when asked (Haiku).
