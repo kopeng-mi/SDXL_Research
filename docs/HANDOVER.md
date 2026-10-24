@@ -30,6 +30,9 @@ Tailscale only (Cloudflare removed: kept breaking). Open `http://sdxlr:7860`. No
 ## Measured on T4 (new UI)
 First Z-Image Q8 load+gen 5m08s (cancel mid-download works, resumes). Speed 38 s, Quality 49 s, area change 37 s. Qwen captions 5m39s first run (mostly 8.8 GB download). VRAM Q8 run: DiT 6.7, TE nf4 2.4, VAE 0.2, cache 5.1 GB (now freed after each image).
 
+## Next: `docs/OVERHAUL_PLAN.md`
+Decided plan for step4 (engine worker process, brush-mask editing with crop-and-stitch, speed, LoRA checks, UI rework), with research, edge cases and the T4 test plan. Test photos in `dataset_test/` (git-ignored, personal). The list below is the background it came from.
+
 ## Open (user wants to rethink these next)
 1. **OOM / VM froze** during first img2img test on T4 (log lost). Suspects: uploads not downscaled (cap ~1.2 MP for area/whole), `fetch prefetch` imports `engine` → torch (+1-2 GB RAM; move constants to a light module), no free-RAM guard. Add RAM/VRAM log every 30 s and copy logs off-VM on failure.
 2. **Rethink img2img UX**: prompt + masking (brush, not only boxes), whole/area/upscale in one clear flow. Untested on real GPU: whole-image, upscale, SDXL img2img.
