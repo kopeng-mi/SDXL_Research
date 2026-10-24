@@ -178,8 +178,9 @@ def save_edit_masks(paths: list[str], masks: list) -> None:
             pass
 
 
-def _edit_images(eng, args, step, check):
-    """Crop-and-stitch edits: area (painted mask or boxes) and extend (outpaint)."""
+def _edit_images(eng, args, step, check, status=None, label="", on_image=None):
+    """Crop-and-stitch edits: area (painted mask or boxes) and extend (outpaint).
+    on_image(img, mask, seed) is called as each variation finishes, so a cancel keeps the finished ones."""
     import random
 
     from . import edit
@@ -206,6 +207,8 @@ def _edit_images(eng, args, step, check):
     feather = int(j.get("feather", 12))
     outs, masks = [], []
     for c in range(count):
+        if status and count > 1:
+            status(f"{label}, variation {c + 1} of {count}")
         img = base.copy()
         for rm in regions:
             plan = edit.prepare(img, rm, multiple, feather_px=feather, fill=tool != "extend")
@@ -216,6 +219,8 @@ def _edit_images(eng, args, step, check):
             check()
         outs.append(img)
         masks.append(mask)
+        if on_image:
+            on_image(img, mask, seed + c)
     return outs, masks, seed, f"{len(outs)} image(s) from {len(regions)} region(s)"
 
 
@@ -227,10 +232,17 @@ def _op_generate(eng, args, status, step, check):
     if j.get("blend", "plain") != "plain":  # the ControlNet blend comes with the T4 work
         raise UserError("That blend mode is not available yet. Use the plain one.")
     if tool in ("area", "extend"):
-        images, masks, seed, note = _edit_images(eng, args, step, check)
-        meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
-        paths = save_images(images, meta, seed)
-        save_edit_masks(paths, masks)
+        paths = []
+
+        def keep(img, mask, seed_c):  # saved at once: History keeps the finished variations if the next is cancelled
+            meta_c = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
+            p = save_images([img], meta_c, seed_c)
+            save_edit_masks(p, [mask])
+            paths.extend(p)
+
+        label = "Extending the image" if tool == "extend" else "Changing the painted part"
+        images, masks, seed, note = _edit_images(eng, args, step, check, status, label, keep)
+        meta = {"seconds": round(time.time() - t0, 1)}
         return {"paths": paths, "seed": seed, "info": f"{meta['seconds']}s | {note} | seed {seed}",
                 "size": list(images[0].size)}
     if tool == "whole":
@@ -242,15 +254,18 @@ def _op_generate(eng, args, status, step, check):
         if seed < 0:
             import random
             seed = random.randrange(2**31 - 1)
-        images, info = [], ""
-        for c in range(max(1, min(4, int(j.get("count", 1))))):  # variations run one after another
+        images, paths, info = [], [], ""
+        n = max(1, min(4, int(j.get("count", 1))))
+        for c in range(n):  # variations run one after another, each saved as it finishes
             check()
+            if n > 1:
+                status(f"Changing the image, variation {c + 1} of {n}")
             ims, _, info = eng.generate(_plain_job(j, seed + c, step, image=base, count=1))
+            if j.get("keep_size"):
+                ims = [im.resize(original.size, Image.LANCZOS) for im in ims]
+            meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
+            paths += save_images(ims, meta, seed + c)
             images += ims
-        if j.get("keep_size"):
-            images = [im.resize(original.size, Image.LANCZOS) for im in images]
-        meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
-        paths = save_images(images, meta, seed)
         return {"paths": paths, "seed": seed, "info": info, "size": list(images[0].size)}
     job = _job_from(eng, j, step)
     check()

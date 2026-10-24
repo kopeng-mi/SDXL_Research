@@ -54,7 +54,7 @@ def _once(name: str) -> bool:
 
 
 def _sleep(secs: float) -> None:
-    scale = 0.0 if os.environ.get("SDXLR_FAKE_FAST") else float(os.environ.get("SDXLR_FAKE_SCALE", "1"))
+    scale = 0.0 if os.environ.get("SDXLR_FAKE_FAST", "0") not in ("", "0") else float(os.environ.get("SDXLR_FAKE_SCALE", "1"))
     if scale > 0:
         time.sleep(secs * scale)
 

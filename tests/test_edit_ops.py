@@ -17,7 +17,9 @@ from PIL import Image
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 sys.path.insert(0, SRC)
 TMP = Path(tempfile.mkdtemp(prefix="sdxlr_ops_test_"))
-os.environ.update({"SDXLR_FAKE_ENGINE": "1", "SDXLR_FAKE_FAST": "1", "SDXLR_WORK": str(TMP / "work")})
+# setdefault: the spawned worker re-imports this file and must keep the parent's values
+for _k, _v in {"SDXLR_FAKE_ENGINE": "1", "SDXLR_FAKE_FAST": "1", "SDXLR_WORK": str(TMP / "work")}.items():
+    os.environ.setdefault(_k, _v)
 
 from sdxlr.engine import client as client_mod  # noqa: E402
 from sdxlr.engine import edit  # noqa: E402
@@ -146,6 +148,46 @@ def test_whole_keep_size_and_variations() -> None:
     r2 = run({"tool": "whole", "strength": 0.5, "keep_size": False}, src)
     w, h = Image.open(r2["paths"][0]).size
     assert w * h <= 1.25e6 and w % MULTIPLE == 0 and h % MULTIPLE == 0, (w, h)  # the ~1 MP work copy
+
+
+def test_cancel_keeps_finished_variations() -> None:
+    import threading
+    import time
+
+    from sdxlr.activity import Cancelled, Task
+    src = make_source(640, 480)
+    mask = make_mask((640, 480), [[100, 100, 200, 200]], "m6.png")
+    out_dir = TMP / "work" / "outputs"
+    before = set(out_dir.rglob("*.png")) if out_dir.exists() else set()
+    os.environ["SDXLR_FAKE_SCALE"] = "1"  # 4 s per variation
+    os.environ["SDXLR_FAKE_FAST"] = "0"
+    try:
+        c = client_mod.EngineClient()
+        res = {}
+        try:
+            c.call("load", {"kind": "sdxl", "path": "/m/a.safetensors"})
+            task = Task("generate", "v")
+
+            def go():
+                job = {"prompt": "x", "steps": 10, "cfg": 5, "seed": 5, "count": 3, "blend": "plain", "image": str(src),
+                       "tool": "area", "mask": str(mask)}
+                try:
+                    c.call("generate", {"job": job, "meta": {"source": str(src)}}, task)
+                except Cancelled:
+                    res["r"] = "Cancelled"
+
+            th = threading.Thread(target=go, daemon=True)
+            th.start()
+            time.sleep(6.0)  # inside the second variation
+            task.cancel()
+            th.join(15)
+        finally:
+            c.kill()
+    finally:
+        os.environ["SDXLR_FAKE_FAST"] = "1"
+        os.environ.pop("SDXLR_FAKE_SCALE", None)
+    made = [p for p in out_dir.rglob("*.png") if p not in before and "_mask" not in p.name]
+    assert res.get("r") == "Cancelled" and len(made) >= 1, (res, made)
 
 
 if __name__ == "__main__":
