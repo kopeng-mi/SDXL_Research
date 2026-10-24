@@ -30,6 +30,7 @@ UPLOADS = WORK / "uploads"
 THUMBS = WORK / "thumbs"
 RUNS = WORK / "runs"
 LOGS = WORK / "logs"
+PREVIEWS = WORK / "previews"  # live step previews (JPEG per request), served to the page
 COMPARE = WORK / "compare"
 RUN = WORK / "run"  # pidfiles: the engine worker and job processes
 SESS = WORK / "sessions"
@@ -50,8 +51,17 @@ Z_SIZES_GB = {"turbo Q8": 7.2, "turbo Q6": 5.9, "turbo Q5": 5.6, "turbo Q4": 5.0
 Z_ENCODERS = {
     "official": "Tongyi-MAI/Z-Image-Turbo:text_encoder",
     "abliterated": "BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1",  # fewer refusals in prompt following
+    # pre-quantized nf4 (3.3 GB download, no quantizing on every load); its own bnb config is used. Test option: the
+    # T4 comparison against the official encoder decides whether it becomes the default
+    "unsloth": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit:text_encoder",
 }
-TE_GB = {"nf4": 2.5, "int8": 4.4, "fp16": 7.9}  # download size of the text encoder variants
+TE_GB = {"nf4": 2.5, "int8": 4.4, "fp16": 7.9, "prequant": 3.4}  # download size of the text encoder variants
+PREVIEW_VAES = {"zimage": "madebyollin/taef1", "sdxl": "madebyollin/taesdxl"}  # tiny VAEs for live previews
+
+
+def te_prequantized(text_encoder: str) -> bool:
+    """True for a text encoder that ships its own quantization (the unsloth bnb-4bit one)."""
+    return text_encoder.startswith("unsloth/") and "bnb" in text_encoder
 
 # name -> (diffusers scheduler class, kwargs); diffusers itself is imported only where it runs
 SAMPLERS = {

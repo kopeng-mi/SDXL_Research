@@ -23,10 +23,11 @@ import time
 
 from PIL import Image
 
-from ..paths import OUTPUTS, RUN
+from ..paths import OUTPUTS, PREVIEWS, RUN
 
 GB = 2**30
 BEAT_SECS = float(os.environ.get("SDXLR_BEAT_SECS", "2"))  # tests shorten it
+_preview = [None]  # on_preview(step, latents) for the current request; set in main()
 _models = None  # the engine module: models (torch), or fake (stub) when SDXLR_FAKE_ENGINE is set; picked in main()
 
 
@@ -106,6 +107,10 @@ def save_images(images, meta: dict, seed: int) -> list[str]:
         png = PngInfo()
         png.add_text("sdxlr", json.dumps(m))
         im.save(p, pnginfo=png)
+        try:  # the page shows this smaller copy; Download gives the PNG
+            im.convert("RGB").save(p.with_suffix(".webp"), "WEBP", quality=90, method=4)
+        except Exception:
+            pass
         p.with_suffix(".json").write_text(json.dumps(m, indent=1), encoding="utf-8")
         paths.append(str(p))
     return paths
@@ -155,7 +160,8 @@ def _job_from(eng, j: dict, step) -> "object":
                       count=int(j.get("count", 1)), sampler=j.get("sampler", "dpmpp_2m_karras"),
                       clip_skip=int(j.get("clip_skip", 2)),
                       loras=[(p, float(v)) for p, v in j.get("loras") or []],
-                      image=image, mask=mask, strength=float(j.get("strength", 0.75)), on_step=step)
+                      image=image, mask=mask, strength=float(j.get("strength", 0.75)), on_step=step,
+                      on_preview=_preview[0])
 
 
 def _plain_job(j: dict, seed: int, step, image=None, count: int = 1, strength: float | None = None) -> "object":
@@ -166,7 +172,8 @@ def _plain_job(j: dict, seed: int, step, image=None, count: int = 1, strength: f
                       cfg=float(j["cfg"]), width=w, height=h, seed=seed, count=count,
                       sampler=j.get("sampler", "dpmpp_2m_karras"), clip_skip=int(j.get("clip_skip", 2)),
                       loras=[(p, float(v)) for p, v in j.get("loras") or []], image=image,
-                      strength=float(j.get("strength", 0.75) if strength is None else strength), on_step=step)
+                      strength=float(j.get("strength", 0.75) if strength is None else strength), on_step=step,
+                      on_preview=_preview[0])
 
 
 def save_edit_masks(paths: list[str], masks: list) -> None:
@@ -335,6 +342,19 @@ def main(conn, cancel_event, parent_pid: int) -> None:
         if cancel_event.is_set():
             raise Cancelled
 
+    def on_preview(i: int, latents) -> None:
+        """Every 2nd step: the engine decodes a small preview; the event goes out once the JPEG is written."""
+        if not hasattr(eng, "make_preview") or eng.pipe is None:
+            return
+        rid = cur["id"]
+        path = PREVIEWS / f"{rid}.jpg"
+        eng.make_preview(latents, path, lambda p, rid=rid, i=i: send({"type": "preview", "id": rid, "path": str(p), "step": i}))
+
+    _preview[0] = on_preview
+    PREVIEWS.mkdir(parents=True, exist_ok=True)
+    for old in PREVIEWS.glob("*"):  # leftovers of an earlier worker
+        old.unlink(missing_ok=True)
+
     def status(text: str):
         check()
         send({"type": "stage", "id": cur["id"], "stage": text})
@@ -410,5 +430,7 @@ def main(conn, cancel_event, parent_pid: int) -> None:
                 import traceback
                 send({"type": "error", "id": cur["id"], "error": f"{type(e).__name__}: {e}",
                       "tb": traceback.format_exc()[-4000:]})
+            finally:
+                (PREVIEWS / f"{cur['id']}.jpg").unlink(missing_ok=True)
     finally:
         pid_f.unlink(missing_ok=True)

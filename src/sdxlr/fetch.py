@@ -105,6 +105,14 @@ def prefetch_sdxl() -> None:
     print("fp16 VAE ready", flush=True)
 
 
+def prefetch_preview(kind: str) -> None:
+    from huggingface_hub import snapshot_download
+
+    from .paths import PREVIEW_VAES
+    snapshot_download(PREVIEW_VAES[kind])
+    print(f"preview VAE ready ({PREVIEW_VAES[kind]})", flush=True)
+
+
 def list_models() -> list[Path]:
     """SDXL checkpoints only (Z-Image parts live in models/zimage*/)."""
     return sorted(p for p in MODELS.rglob("*.safetensors")
@@ -125,6 +133,9 @@ if __name__ == "__main__":
     kind, *srcs = sys.argv[1:]
     if kind == "prefetch-zimage":
         prefetch_zimage(*srcs)
+        sys.exit()
+    if kind == "prefetch-preview":
+        prefetch_preview(*srcs)
         sys.exit()
     if kind == "prefetch-sdxl":
         prefetch_sdxl()

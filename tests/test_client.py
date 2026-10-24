@@ -168,6 +168,15 @@ def test_loras_reach_the_engine() -> None:
         assert "/l/a.safetensors" in c.adapters and "/l/off.safetensors" not in c.adapters, c.adapters
 
 
+def test_previews_reach_the_task() -> None:
+    from sdxlr.activity import Task
+    with client(SDXLR_FAKE_FAST="1") as c:
+        c.call("load", LOAD)
+        t = Task("generate", "p")
+        c.call("generate", {"job": {**JOB, "steps": 10}, "meta": {}}, t)
+        assert t.preview.endswith(".jpg") and t.preview_n >= 2, (t.preview, t.preview_n)  # steps 2, 4, 6, 8
+
+
 def test_worker_crash_then_restart() -> None:
     from sdxlr.engine.client import WorkerDied
     with client(SDXLR_FAKE_CRASH="1", SDXLR_FAKE_SCALE="0.1") as c:

@@ -134,6 +134,7 @@ def _load(S, task) -> None:
         if engc.needs_prefetch:  # the stub engine does not load real weights
             _check_ram("Z-Image", None, tr, S["z_quant"])
             _prefetch(task, "prefetch-zimage", tr, te)
+            _prefetch(task, "prefetch-preview", "zimage")
         engc.call("load", {"kind": "zimage", "transformer": tr, "text_encoder": te, "te_quant": S["z_quant"]}, task)
     else:
         mp = model_path(S["sdxl_model"])
@@ -142,6 +143,8 @@ def _load(S, task) -> None:
             _check_ram("SDXL", mp, None, S["z_quant"])
         if S["vae"] == "fp16fix" and engc.needs_prefetch:
             _prefetch(task, "prefetch-sdxl")
+        if engc.needs_prefetch:
+            _prefetch(task, "prefetch-preview", "sdxl")
         engc.call("load", {"kind": "sdxl", "path": mp, "vae": S["vae"]}, task)
 
 

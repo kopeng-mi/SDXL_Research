@@ -304,6 +304,8 @@ class EngineClient:
                         task.set_stage(ev["stage"])  # raises Cancelled if the task was cancelled
                     elif t == "step" and task is not None:
                         task.step(ev["done"], ev["total"])
+                    elif t == "preview" and task is not None:
+                        task.preview, task.preview_n = Path(ev["path"]).name, task.preview_n + 1
                     elif t == "result":
                         res = ev.get("result") or {}
                         st = res.pop("state", None)

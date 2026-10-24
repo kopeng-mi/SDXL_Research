@@ -41,6 +41,7 @@ class Job:
     mask: Image.Image | None = None
     strength: float = 0.75
     on_step: Callable[[int, int], None] | None = None
+    on_preview: Callable[[int, object], None] | None = None
 
 
 def _once(name: str) -> bool:
@@ -122,10 +123,23 @@ class Engine:
                 self.adapters[p] = "fake"
                 self.adapters.pop(next(iter(self.adapters))) if len(self.adapters) > 12 else None
 
-    def _steps(self, steps: int, on_step, secs: float = 12.0) -> None:
+    def make_preview(self, latents, path, done) -> None:
+        """A placeholder preview: a gradient that changes with the step (the real engine decodes the latents)."""
+        self._prev_n = getattr(self, "_prev_n", 0) + 1
+        im = Image.linear_gradient("L").resize((256, 192)).convert("RGB")
+        ImageDraw.Draw(im).text((8, 8), f"preview {self._prev_n}", fill=(255, 255, 255))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".part")
+        im.save(tmp, "JPEG", quality=70)
+        os.replace(tmp, path)
+        done(path)
+
+    def _steps(self, steps: int, on_step, secs: float = 12.0, on_preview=None) -> None:
         for i in range(1, steps + 1):
             if on_step:
                 on_step(i, steps)
+            if on_preview and i % 2 == 0 and i < steps:
+                on_preview(i, None)
             _sleep(secs / steps)
 
     def generate(self, job: Job) -> tuple[list[Image.Image], int, str]:
@@ -135,7 +149,7 @@ class Engine:
             os._exit(9)  # like the kernel's OOM kill: no goodbye on the pipe
         t0 = time.time()
         self._use(job.loras)
-        self._steps(max(1, int(job.steps)), job.on_step)
+        self._steps(max(1, int(job.steps)), job.on_step, on_preview=job.on_preview)
         seed = job.seed if job.seed >= 0 else random.randrange(2**31 - 1)
         w, h = job.image.size if job.image is not None else (job.width, job.height)
         images = [_img(w, h, f"{job.prompt[:60]} | fake") for _ in range(max(1, job.count))]
@@ -145,7 +159,7 @@ class Engine:
         if self.pipe is None:
             raise RuntimeError("no model loaded")
         self._use(job.loras)
-        self._steps(max(1, int(job.steps)), job.on_step, secs=4.0)
+        self._steps(max(1, int(job.steps)), job.on_step, secs=4.0, on_preview=job.on_preview)
         return _img(crop.width, crop.height, "edit fake")
 
     def upscale(self, job: Job, scale: float = 2.0, tile: int = 1024, overlap: int = 128,

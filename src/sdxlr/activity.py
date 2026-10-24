@@ -63,6 +63,8 @@ class Task:
     ended: float | None = None
     _logged: float = 0.0
     cancelled: bool = False
+    preview: str = ""  # file name of the latest live preview (served under /work/previews/)
+    preview_n: int = 0  # bumps with every preview, to bust the browser cache
     proc: object = None  # a child process doing part of the work (download); killed on cancel
     on_cancel: object = None  # set while an engine op runs; stops the worker when the task is cancelled
 
