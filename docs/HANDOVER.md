@@ -4,48 +4,45 @@ Read with `docs/PLAN.md` (decisions, T4 numbers). Terse on purpose.
 
 ## State
 - Repo `kopeng-mi/SDXL_Research` (public, no personal data). Local: `C:\Users\raman\Documents\MyGit\temps\SDXL_Research`.
-- Branch **`step3-nicegui`** (pushed, last `121a242`). Built on `step2-polish` → `step1-scaffold`. `main` = init only. **Merge pending** (user: after testing; no squash; then set `cells/00_setup.py` BRANCH back to `main`).
+- Branch **`step4-overhaul`**. **P0 (stability) done** — 8 commits from `refactor(paths)` to the thumb prewarm. Verified locally with the fake engine end to end (load, txt2img, area/whole/upscale tools with a 24 MP source capped to ~1.2 MP, cancel, worker crash + recovery, upload caps, GPU-job handoff) and a browser UI pass; `rg "import torch" src/sdxlr/ui src/sdxlr/service` is empty. **The real worker process has never run on a GPU** — first T4 session must cover: spawn, load, generate, cancel-during-load (kill path), guard trip, beat-driven sidebar. P1 (image editing) is next per `docs/OVERHAUL_PLAN.md`.
+- `main` = init only; merge after full testing (no squash), then set `cells/00_setup.py` BRANCH back to `main`.
 - Notebook = `cells/00_setup.py` + `cells/10_launch.py` → `python tools/build_notebook.py`. Launch runs `nb.serve(["-m","sdxlr.webui",...])` (auto-restart on crash).
-- Gradio `app.py` is dead code (still in repo, gradio still pinned): remove when NiceGUI is final.
+- Gradio `app.py` is dead code (still in repo, gradio still pinned, imports updated to engine/models): remove in P5.
 
-## Code map (new parts)
+## Code map (step4 layout)
 | File | Role |
 |---|---|
-| `webui.py` | shim → `ui/frame.main` |
-| `ui/core.py` | state (`DEFAULTS`, `STATES` per 4-digit session, autosave), engine/jobs singletons, checks (`check_*`, raise ValueError with user text), `generate_blocking` (tools: None/area/whole/upscale), `submit_*` jobs, `save_upload`, `shred`, `job_error`, usage + disk-rate sampler threads |
-| `ui/theme.py` | CSS (darkroom palette, IBM Plex Sans, no motion), `labeled`, `seg`, `main_button`, `button`, `confirm`, `JobLine` |
-| `ui/frame.py` | sidebar (nav, model, VRAM/RAM/disk bars, current task + Cancel, session menu), failure/done toasts, startup, Tailscale |
-| `ui/pages/*.py` | generate, dataset, train, compare, library, history, activity |
-| `engine.py` | + status/step callbacks, img2img (Z + SDXL), `upscale()` tiled 1024/128 overlap, `empty_cache` after each image |
-| `activity.py` | in-process Task (stage, steps, cancel, child proc), disk-rate download watcher, logging to `WORK/logs/app.log` + stdout |
-| `jobs.py` | + per-job logs `logs/jobs/<id>.log`, throttled log lines |
-| `fetch.py` | + `prefetch-zimage/-sdxl` (child process so Cancel kills downloads), HF blob links, uploads, `zimage_custom` |
-| `hfsync.py` | auto resume: HF `NAME/ckpt/` (latest LoRA+state only) + `NAME/dataset/` |
-| `tailnet.py` | tailscaled userspace, `TS_AUTHKEY`, hostname `sdxlr`, logout on shutdown |
-| `history.py` / `session.py` / `resources.py` | image JSON sidecars; session codes (`latest()` auto-continue); usage blocks (NVML) |
+| `paths.py` | dirs + model catalog (Z_REPO, Z_MODELS, Z_ENCODERS, SAMPLERS, z_key), stdlib only. Local runs (no /content) use ./work; `SDXLR_WORK` overrides |
+| `engine/client.py` | web-side proxy: spawn worker (torch imports only in the child), one op at a time, stage/step events -> task, beats -> VRAM mirror, cancel (kill after 8 s), death -> plain sentence + restart on next call |
+| `engine/worker.py` | process main: ops (load/unload/status/generate/upscale), heartbeats every 2 s (VRAM parts, rss), orphan exit, pidfile, oom_score 1000, work_copy caps (~1.2 MP), saves PNG + JSON sidecar |
+| `engine/models.py` | the torch Engine (load/set_loras/generate/upscale) + stage timing; `engine/fake.py` = fake client (`SDXLR_FAKE_ENGINE=1`, `SDXLR_FAKE_CRASH=1` kills once) |
+| `service/gen.py` | state -> engine requests (load_blocking, generate_blocking, reuse); RAM refusal via guard |
+| `service/jobs.py` | JobManager (moved), gpu_lock, pidfiles + oom_score 800 per job, on_fail hook |
+| `service/guard.py` | RAM watchdog (700 MB kill line: worker then GPU job), health line every 30 s, load refusal, crash-log export to Drive/sync repo, stale-job cleanup |
+| `service/files.py` | cached listings (history+meta, prompts, LoRAs/models/datasets, caption texts, thumbs 160/320 prewarmed) refreshed every 2.5 s or on poke(); url/thumb live here |
+| `service/state.py` | bindable-dataclass session state (dict-style access), JSON migration on load |
+| `ui/core.py` | wiring + re-exports; `ui/frame.py` starts guard, files refresh, autosave; pages read only caches |
+| rest (`webui, ui/*, train*, caption, compare, data, fetch, hfsync, tailnet, resources, activity, history, session, settings`) | unchanged roles; resources is torch-free (beats + NVML) |
 
 ## Access
-Tailscale only (Cloudflare removed: kept breaking). Open `http://sdxlr:7860`. Non-ephemeral key → each new VM is `sdxlr-N` (Colab kill skips logout). User will make an **ephemeral** key. **The test key in chat history must be deleted** (user said they will).
+Tailscale only. Open `http://sdxlr:7860`. Non-ephemeral key → each new VM is `sdxlr-N`. **The test key in chat history must be deleted** (user said they will).
 
-## Measured on T4 (new UI)
-First Z-Image Q8 load+gen 5m08s (cancel mid-download works, resumes). Speed 38 s, Quality 49 s, area change 37 s. Qwen captions 5m39s first run (mostly 8.8 GB download). VRAM Q8 run: DiT 6.7, TE nf4 2.4, VAE 0.2, cache 5.1 GB (now freed after each image).
+## Measured on T4 (step3 UI, before step4)
+First Z-Image Q8 load+gen 5m08s. Speed 38 s, Quality 49 s, area change 37 s. Qwen captions 5m39s first run. VRAM Q8 run: DiT 6.7, TE nf4 2.4, VAE 0.2 GB. Step4 numbers to re-measure on the first T4 session.
 
-## Next: `docs/OVERHAUL_PLAN.md`
-Decided plan for step4 (engine worker process, brush-mask editing with crop-and-stitch, speed, LoRA checks, UI rework), with research, edge cases and the T4 test plan. Test photos in `dataset_test/` (git-ignored, personal). The list below is the background it came from.
-
-## Open (user wants to rethink these next)
-1. **OOM / VM froze** during first img2img test on T4 (log lost). Suspects: uploads not downscaled (cap ~1.2 MP for area/whole), `fetch prefetch` imports `engine` → torch (+1-2 GB RAM; move constants to a light module), no free-RAM guard. Add RAM/VRAM log every 30 s and copy logs off-VM on failure.
-2. **Rethink img2img UX**: prompt + masking (brush, not only boxes), whole/area/upscale in one clear flow. Untested on real GPU: whole-image, upscale, SDXL img2img.
-3. **Rethink UI** generally (user found it clunky; two Haiku user tests done, most findings fixed).
-4. Optimization: optional TE unload after encode (2.4 GB), VAE tiling for peak, smaller GGUF.
-5. Small: stage text during download, image swaps late over slow link, dataset tile heights, Haiku leftovers (menu a11y, import count 0/6 vs 5, Activity "Done" row keeps download text).
-6. Still unproven: Z-Image identity LoRA quality (needs user's real run), auto resume (needs HF token), 768 px Z training.
+## Open (from step3, still relevant)
+1. ~~OOM / VM freeze~~ addressed by P0 (worker process, caps, guard) — needs the T4 proof run.
+2. Rethink img2img UX (P1: brush mask + crop-and-stitch, one flow).
+3. Rethink UI generally (P4).
+4. Optimization list = P2 (TE unload, VAE tiling, previews, unsloth TE, benchmarks).
+5. Still unproven: Z-Image identity LoRA quality, auto resume (needs HF token), 768 px Z training.
 
 ## Testing workflow
-- Local UI without GPU: `colab_tests\dev_ui.py` (fakes engine, load, jobs; work dir `colab_tests\dev_work`, port 7870). Run: `uv run --no-project --with nicegui==3.18.0 --with pyyaml --with psutil --with huggingface_hub --with pillow --with toml --with numpy python dev_ui.py`. Real jobs are faked (they once downloaded 0.9 GB to `C:\content`).
-- Colab: `colab new -s t4 --gpu T4`; upload key to `/content/.tskey`; `colab exec -f colab_tests\_ts_start.py` (clones branch, bootstrap, webui); poll `_ts_chk.py`; `PYTHONIOENCODING=utf-8` for exec. Browser checks: the agent's built-in browser on `http://sdxlr[-N]:7860` (this PC is on the tailnet).
-- Gotchas: Git Bash heredocs turn `\\n` into a real newline (write edit scripts with the Write tool); `pkill -f name` matches its own shell (use `name[x]`); port 8080 = Colab Jupyter, never expose; router DNS sometimes refuses new VM hosts (new session fixes).
-- Leftover: empty `C:\content` folder (tool blocks deleting it; user: `rm C:\content`).
+- Local fake UI: `SDXLR_WORK=work SDXLR_FAKE_ENGINE=1 PYTHONPATH=src uv run --no-project --with nicegui==3.18.0 --with pyyaml --with psutil --with huggingface_hub --with pillow --with toml --with numpy python -m sdxlr.webui --port 7870 --access none` (fake engine never downloads; needs_prefetch=False gates prefetch + the RAM refusal). Browser checks: Z Code's built-in browser on 127.0.0.1:7870.
+- Colab: `colab new -s t4 --gpu T4`; upload key to `/content/.tskey`; `colab exec -f colab_tests\_ts_start.py` (clones branch, bootstrap, webui); poll `_ts_chk.py`; `PYTHONIOENCODING=utf-8` for exec. `colab_tests\` is **not in the repo** — it lived on the old VM; rebuild the two small scripts (ts_start: clone+bootstrap+launch; ts_chk: curl the port) or run the cells.
+- Gotchas: Git Bash heredocs turn `\n` into a real newline (write edit scripts with the Write tool); `pkill -f name` matches its own shell (use `name[x]`); port 8080 = Colab Jupyter, never expose; router DNS sometimes refuses new VM hosts.
+- Leftover: empty `C:\content` folder (user: `rm C:\content`).
 
 ## User preferences
 Plan first; numbered questions in chat (`Q1. ... 1. (recommended)`), terse answers like `36:2`. Short plain replies, bold key terms, no filler. Ask before new packages, big deletes, git remote/history (pushing work branches is fine). Small conventional commits, no co-author. Nushell for commands. Free Colab: stop VMs when idle. Subagents only when asked (Haiku).
+
