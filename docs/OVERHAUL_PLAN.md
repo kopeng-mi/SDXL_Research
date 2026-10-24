@@ -11,7 +11,7 @@ For the agents who implement this. Read `docs/HANDOVER.md` first (state, testing
   - Public repo: no personal data. Tokens (HF_TOKEN, CIVITAI_TOKEN, TS_AUTHKEY) come from Colab Secrets only, never files or commits. `dataset_test/` photos never leave this PC except to a test VM.
   - Free Colab T4: stop every VM when done.
   - Verify before saying done: run tests, the fake-engine UI, or the T4 run, and report failures as they are.
-- Tools named in HANDOVER (`colab` CLI, `agent-browser`, `wsf` web search) are installed on this PC; check `--help` before use. Where this plan says "Haiku user tests", read it as "subagent UI tests, ask the user first".
+- Tools named in HANDOVER (`colab` CLI, `wsf` web search) are installed on this PC; check `--help` before use. For browser checks use Z Code's built-in browser. Where this plan says "Haiku user tests", read it as "subagent UI tests, ask the user first".
 - Library facts below were checked against the pinned versions; recheck anything not listed against the pinned source (`diffusers==0.40.0`, `nicegui==3.18.0`, `transformers==5.17.0`) before relying on memory.
 
 ## Decisions (user, final)
@@ -166,7 +166,7 @@ Remove the Gradio `app.py` and the gradio pin; update `README`, `docs/PLAN.md`, 
 **Colab**: VM recycled (only HF sync or Drive survive: remind in Library); TS_AUTHKEY missing or expired (plain message in the Launch cell, local address fallback); ephemeral node name reuse (`sdxlr`, else `sdxlr-N`); idle disconnect when only the app is used and the Colab tab sits idle: measure, then document "keep the Colab tab open" or add a keep-alive if needed.
 
 ## Test plan
-- **Local, no GPU**: unit tests for `edit.py` (crop box, stitch exactness, grow/feather, outpaint canvas), `upscale.py` tile plan, `loraformat.py` (fixture headers written in the test), state migration, guard thresholds with fake meminfo. UI with `SDXLR_FAKE_ENGINE=1` plus agent-browser walkthroughs and screenshots (see HANDOVER testing workflow, port 7870).
+- **Local, no GPU**: unit tests for `edit.py` (crop box, stitch exactness, grow/feather, outpaint canvas), `upscale.py` tile plan, `loraformat.py` (fixture headers written in the test), state migration, guard thresholds with fake meminfo. UI with `SDXLR_FAKE_ENGINE=1` plus browser walkthroughs and screenshots (see HANDOVER testing workflow, port 7870).
 - **T4 session A (end of P2, about 45 min)**: health log and guard (a synthetic RAM hog must kill the worker, not the session); 24 MP upload; loads Q8/Q6/Q4/unsloth with peaks; stage timings; TE comparison; LoRA fuse benchmark.
 - **T4 session B (end of P4)**: editing on `dataset_test` (inpaint both models, ControlNet lite, outpaint, whole, upscale both ways); phone check.
 - **T4 session C (training, 2 to 3 h, stop the VM right after)**: import `dataset_test` (dedupe check) -> captions (WD and Qwen) -> SDXL LoRA (11 x 6 repeats x 15 epochs / batch 3 = 330 steps, about 30 min) -> Z-Image LoRA on Base at 512 (11 x 4 x 10 = 440 steps, about 42 min) and, if approved, Turbo + training adapter -> compare grids -> generate and face-inpaint with the LoRAs -> face similarity with `colab_tests/faces_common.py`. Then delete the photos, captions and LoRAs from the VM (Library > Delete everything) unless the user says otherwise.

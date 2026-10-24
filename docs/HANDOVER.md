@@ -43,7 +43,7 @@ Decided plan for step4 (engine worker process, brush-mask editing with crop-and-
 
 ## Testing workflow
 - Local UI without GPU: `colab_tests\dev_ui.py` (fakes engine, load, jobs; work dir `colab_tests\dev_work`, port 7870). Run: `uv run --no-project --with nicegui==3.18.0 --with pyyaml --with psutil --with huggingface_hub --with pillow --with toml --with numpy python dev_ui.py`. Real jobs are faked (they once downloaded 0.9 GB to `C:\content`).
-- Colab: `colab new -s t4 --gpu T4`; upload key to `/content/.tskey`; `colab exec -f colab_tests\_ts_start.py` (clones branch, bootstrap, webui); poll `_ts_chk.py`; `PYTHONIOENCODING=utf-8` for exec. Browser: `agent-browser --session X` on `http://sdxlr[-N]:7860` (this PC is on the tailnet).
+- Colab: `colab new -s t4 --gpu T4`; upload key to `/content/.tskey`; `colab exec -f colab_tests\_ts_start.py` (clones branch, bootstrap, webui); poll `_ts_chk.py`; `PYTHONIOENCODING=utf-8` for exec. Browser checks: the agent's built-in browser on `http://sdxlr[-N]:7860` (this PC is on the tailnet).
 - Gotchas: Git Bash heredocs turn `\\n` into a real newline (write edit scripts with the Write tool); `pkill -f name` matches its own shell (use `name[x]`); port 8080 = Colab Jupyter, never expose; router DNS sometimes refuses new VM hosts (new session fixes).
 - Leftover: empty `C:\content` folder (tool blocks deleting it; user: `rm C:\content`).
 
