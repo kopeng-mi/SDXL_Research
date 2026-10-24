@@ -12,15 +12,13 @@ ValueError with a sentence the user can act on.
 
 from __future__ import annotations
 
-import copy
-import json
 import time
 import zipfile
 from pathlib import Path
 
 from PIL import Image
 
-from .. import history, resources, session
+from .. import history, resources
 from ..activity import LOGS, log
 from ..engine import SAMPLERS, Z_ENCODERS, Z_MODELS  # noqa: F401  (SAMPLERS used by pages)
 from ..modes import ASPECTS, STYLES, train_eta  # noqa: F401  (ASPECTS/STYLES used by pages)
@@ -30,50 +28,7 @@ from ..service.files import (datasets, images, lora_names, lora_path, model_name
 from ..service.gen import (TOOL_LABEL, busy_task, check_generate, check_model, engc, generate_blocking,  # noqa: F401
                            is_loaded, load_blocking, loaded_label, picked_label, reuse, running_job, task_is_loading)
 from ..service.jobs import fmt_secs, gpu_lock, jm  # noqa: F401
-
-NEG_SDXL = "(worst quality:1.3), (low quality:1.2), lowres, bad anatomy, bad hands, watermark, blur, cartoon, anime, drawing"
-DEFAULTS = {
-    # generate
-    "kind": "Z-Image", "sdxl_model": None, "vae": "fp16fix", "z_model": "turbo Q8", "z_te": "official",
-    "z_quant": "nf4", "mode": "Speed", "prompt": "", "negative": NEG_SDXL, "style": "Photo",
-    "aspect": "Portrait 896x1152", "count": 1, "seed": -1, "last_seed": None, "use_adv": False, "steps": 20,
-    "cfg": 5.0, "sampler": "dpmpp_2m_karras", "clip_skip": 2, "loras": [], "image": None, "info": "",
-    # tool on the shown image: None = new image, "area" = change marked boxes, "whole" = change the whole image,
-    # "upscale" = enlarge and add detail; src = the image the tool works on
-    "tool": None, "src": None, "boxes": [], "strength": 0.75, "whole_strength": 0.5, "up_strength": 0.3,
-    "up_scale": 2.0,
-    # dataset
-    "ds_name": "my_photos", "ds_link": "", "ds_pick": None, "cap_model": "qwen", "cap_trigger": "ohwx_person",
-    "cap_class": "woman", "cap_prompt": "", "cap_limit": 0, "cap_over": False,
-    # train
-    "t_kind": "SDXL", "t_ds": None, "t_name": "", "t_base": None, "t_epochs": 15, "t_repeats": 6, "t_batch": 3,
-    "t_res": 512, "t_dim": 24, "t_lr": 2e-4, "t_te_lr": 2e-5, "t_type": "LoRA", "t_hf": "", "t_resume": False,
-    # compare
-    "c_kind": "SDXL", "c_base": None, "c_z": "turbo Q8", "c_loras": [], "c_combos": "", "c_str": "0.6 0.8 1.0",
-    "c_prompt": "ohwx_person, woman, portrait photo, natural light", "c_neg": NEG_SDXL, "c_steps": 20, "c_cfg": 5.0,
-    "c_seed": 42, "c_name": "grid1",
-    # library
-    "l_link": "", "l_kind": "LoRA",
-}
-STATES: dict[str, dict] = {}
-_saved: dict[str, str] = {}
-
-
-def state_for(code: str) -> dict:
-    if code not in STATES:
-        STATES[code] = {**copy.deepcopy(DEFAULTS), **(session.load(code) or {})}
-    return STATES[code]
-
-
-def autosave_loop() -> None:
-    while True:
-        time.sleep(5)
-        for code, s in list(STATES.items()):
-            blob = json.dumps(s, default=str, sort_keys=True)
-            if _saved.get(code) != blob:
-                session.save(code, s)
-                _saved[code] = blob
-
+from ..service.state import STATES, state_for  # noqa: F401
 
 USAGE: dict = {}
 DISK = {"rate": 0.0}  # bytes/s the disk is filling: > 1 MB/s means something is downloading

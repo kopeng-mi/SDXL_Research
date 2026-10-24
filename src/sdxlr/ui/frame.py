@@ -17,6 +17,7 @@ from .. import presets, session, settings
 from ..activity import log, setup_logging
 from ..paths import LORAS, MODELS, THUMBS
 from ..service.jobs import fmt_secs
+from ..service import state
 from . import core
 from .core import (USAGE, busy_task, engc, estimate_preview, jm, loaded_label, running_job, state_for,
                    task_is_loading)
@@ -203,7 +204,7 @@ def main() -> None:
             log.info(presets.pull(settings.get()["sync_repo"]))
         except Exception as e:
             log.info(f"sync pull failed: {e}")
-    threading.Thread(target=core.autosave_loop, daemon=True).start()
+    threading.Thread(target=state.autosave_loop, daemon=True).start()
     threading.Thread(target=core.sample_usage_loop, daemon=True).start()
     from ..service import files as _files
     _files.start_refresh()  # cached listings for every timer (first scan synchronous)
