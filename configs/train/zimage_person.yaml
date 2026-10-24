@@ -2,6 +2,7 @@
 # model, used on Z-Image Turbo for generation. Override with --set key=value.
 
 dit: null             # null = Comfy-Org/Z-Image base (bf16, stored as fp8 when fp8: true)
+adapter: null         # with dit: turbo, "ostris" merges ostris's de-distill training adapter (A/B vs base)
 resolution: 512       # 1024 runs out of memory on a T4; try 768 once 512 works
 batch_size: 1
 repeats: 4

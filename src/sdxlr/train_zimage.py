@@ -41,6 +41,9 @@ FILES = {
     "base": "Comfy-Org/Z-Image/split_files/diffusion_models/z_image_bf16.safetensors",
     "vae": "Comfy-Org/Z-Image/split_files/vae/ae.safetensors",
     "te": "Comfy-Org/Z-Image/split_files/text_encoders/qwen_3_4b.safetensors",
+    "turbo": "Comfy-Org/Z-Image-Turbo/split_files/diffusion_models/z_image_turbo_bf16.safetensors",
+    # ostris's de-distill adapter: training on Turbo with it merged in (musubi --base_weights), use on plain Turbo
+    "ostris": "ostris/zimage_turbo_training_adapter/zimage_turbo_training_adapter_v2.safetensors",
 }
 
 
@@ -95,7 +98,7 @@ def main() -> None:
         sys.exit(f"all {c['epochs']} epochs already done; raise epochs to train more")
 
     d = MODELS / "zimage_train"
-    dit = fetch(c.get("dit") or FILES["base"], d)
+    dit = fetch(FILES.get(c.get("dit") or "base", c.get("dit")), d)  # "base" | "turbo" | org/repo/file
     vae = fetch(FILES["vae"], d)
     te = fetch(FILES["te"], d)
 
@@ -125,6 +128,8 @@ def main() -> None:
         "--seed", str(c["seed"]), "--max_data_loader_n_workers", "1", "--persistent_data_loader_workers",
         "--output_dir", str(out), "--output_name", run_name,
     ]
+    if c.get("adapter"):  # e.g. "ostris" with dit: turbo
+        args += ["--base_weights", str(fetch(FILES.get(c["adapter"], c["adapter"]), d))]
     if c["fp8"]:
         args += ["--fp8_base", "--fp8_scaled"]  # fp8 storage only; T4 computes in fp16
     if c.get("blocks_to_swap"):
@@ -157,7 +162,9 @@ def main() -> None:
     steps = -(-n_imgs * int(c["repeats"]) * int(c["epochs"]) // max(1, int(c["batch_size"])))
     for lora in out.glob("*.safetensors"):  # the diffusers files are what the app loads
         loraformat.sidecar_path(lora).write_text(json.dumps({k: v for k, v in dict(
-            trigger=a.trigger, class_word=a.class_word, dataset=a.images.name, base="Z-Image Base", steps=steps,
+            trigger=a.trigger, class_word=a.class_word, dataset=a.images.name, steps=steps,
+            base={"turbo": "Z-Image Turbo"}.get(c.get("dit") or "base", "Z-Image Base")
+            + (f" + {c['adapter']} adapter" if c.get("adapter") else ""),
             kind="zimage").items() if v}, indent=1), encoding="utf-8")
     print(f"LoRAs in {out}: {sorted(p.name for p in out.glob('*_diffusers.safetensors'))}", flush=True)
     if pusher:
