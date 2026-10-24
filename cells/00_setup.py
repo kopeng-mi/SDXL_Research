@@ -12,7 +12,7 @@ import os, subprocess, sys
 from pathlib import Path
 
 REPO_URL = "https://github.com/kopeng-mi/SDXL_Research.git"  #@param {type:"string"}
-BRANCH = "step2-polish"  #@param {type:"string"}
+BRANCH = "step3-nicegui"  #@param {type:"string"}
 REPO = Path("/content/SDXL_Research")
 
 if not REPO.exists():
