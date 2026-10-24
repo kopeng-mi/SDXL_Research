@@ -42,11 +42,12 @@ SDXL_BASE = "stabilityai/stable-diffusion-xl-base-1.0/sd_xl_base_1.0.safetensors
 # Z-Image choices (any org/repo/file, URL or path also works)
 Z_REPO = "Tongyi-MAI/Z-Image-Turbo"  # tokenizer, VAE, scheduler, configs
 Z_MODELS = {
-    "turbo Q8": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q8_0.gguf",  # 7.2 GB, best quality
-    "turbo Q6": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q6_K.gguf",  # 5.9 GB
+    # default: bnb nf4 DiT, 3.3 GB. T4: 35.9 s Speed (Q8 35.0), the same image with and without a LoRA, 6 GB VRAM
+    "turbo 4-bit (unsloth)": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit:transformer",
+    "turbo Q8": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q8_0.gguf",  # 7.2 GB, 10 GB VRAM
+    "turbo Q6": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q6_K.gguf",  # 5.9 GB; Q6/Q4 are slower than Q8 on a T4
     "turbo Q5": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q5_K_M.gguf",  # 5.6 GB
     "turbo Q4": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q4_K_M.gguf",  # 5.0 GB
-    "turbo 4-bit (unsloth)": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit:transformer",  # 3.3 GB nf4: same speed, 6 GB VRAM
 }
 Z_SIZES_GB = {"turbo Q8": 7.2, "turbo Q6": 5.9, "turbo Q5": 5.6, "turbo Q4": 5.0, "turbo 4-bit (unsloth)": 3.3}  # download sizes of the built-in models
 Z_ENCODERS = {

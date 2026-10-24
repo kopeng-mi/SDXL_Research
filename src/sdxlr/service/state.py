@@ -27,7 +27,7 @@ class State:
     kind: str = "Z-Image"
     sdxl_model: str | None = None
     vae: str = "fp16fix"
-    z_model: str = "turbo Q8"
+    z_model: str = "turbo 4-bit (unsloth)"  # T4: same speed and look as Q8 (also with LoRAs), 6 GB VRAM, 3.3 GB
     z_te: str = "official"
     z_quant: str = "nf4"
     mode: str = "Speed"
@@ -95,7 +95,7 @@ class State:
     # compare
     c_kind: str = "SDXL"
     c_base: str | None = None
-    c_z: str = "turbo Q8"
+    c_z: str = "turbo 4-bit (unsloth)"
     c_loras: list = field(default_factory=list)
     c_combos: str = ""
     c_str: str = "0.6 0.8 1.0"

@@ -168,7 +168,7 @@ class Engine:
         self.kind, self.model_path, self.vae_mode = "sdxl", path, vae
         return f"loaded {Path(path).name} in {time.time() - t:.0f}s | {vram()}"
 
-    def load_zimage(self, transformer: str = Z_MODELS["turbo Q8"], text_encoder: str = Z_ENCODERS["official"],
+    def load_zimage(self, transformer: str = Z_MODELS["turbo 4-bit (unsloth)"], text_encoder: str = Z_ENCODERS["official"],
                     te_quant: str = "nf4", status: Callable[[str], None] = lambda s: None) -> str:
         """Z-Image: GGUF (or safetensors) transformer + Qwen3 text encoder, fp16 with the T4 overflow fix.
 
