@@ -3,7 +3,7 @@
 Run in the Colab venv (Setup cell done, app NOT running: this script owns the GPU):
 
   SDXLR_DEBUG_OPS=1 /content/venv/bin/python tools/t4_check.py --images /content/t4_imgs
-      [--sections loads,te,edits,big,sdxl,hog] [--sdxl /path/model.safetensors] [--loras a.safetensors,b.safetensors]
+      [--sections loads,te,edits,big,sdxl,hog] [--sdxl base|/path/model.safetensors] [--loras a.safetensors,b.safetensors]
 
 Sections (default: all but sdxl unless --sdxl is given; hog last, it ends with the guard killing the worker):
   loads  Z-Image Q8 / Q6 / Q4: load time, peak worker RAM and VRAM, Speed-mode image at 896x1152, first preview step
@@ -243,6 +243,10 @@ def sec_big(a) -> list[dict]:
 def sec_sdxl(a) -> list[dict]:
     recs = []
     engc.kill()
+    if a.sdxl == "base":  # the public SDXL base checkpoint (6.9 GB, once)
+        from sdxlr.fetch import fetch
+        from sdxlr.paths import MODELS, SDXL_BASE
+        a.sdxl = str(fetch(SDXL_BASE, MODELS))
     sd = dict(kind="SDXL", sdxl_model=a.sdxl, vae="fp16fix", negative="lowres, blurry")
     recs.append(run("load SDXL", load_blocking, base_state(**sd)))
     loras = []
