@@ -34,24 +34,59 @@ def _hf_link(src: str) -> tuple[str, str, str] | None:
 
 
 def fetch(src: str, dst_dir: Path) -> Path:
-    """'org/repo/file', an https URL, or a local path -> local file."""
+    """'org/repo/file', an https URL, or a local path -> local file. Errors come back as plain sentences."""
     if Path(src).exists():
         return Path(src)
     dst_dir.mkdir(parents=True, exist_ok=True)
-    from huggingface_hub import hf_hub_download
+    try:
+        return _fetch(src, dst_dir)
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 22 and "civitai.com" in src:  # curl -f: HTTP error (401/403 without a token)
+            raise RuntimeError("Civitai refused the download: add CIVITAI_TOKEN in Colab Secrets "
+                               "(civitai.com > Account > API keys), run Setup again, then retry.") from None
+        if e.returncode == 23:
+            raise RuntimeError("The download stopped: the disk is full. Free disk space in Library, then retry.") from None
+        raise RuntimeError(f"The download failed (curl exit {e.returncode}): {src}. Check the link and retry.") from None
+    except Exception as e:  # huggingface_hub errors are OSErrors too: match them by name first
+        name = type(e).__name__
+        if getattr(e, "errno", None) == 28:  # ENOSPC
+            raise RuntimeError("The download stopped: the disk is full. Free disk space in Library, then retry.") from None
+        if name in ("GatedRepoError",):
+            raise RuntimeError("This Hugging Face model is gated: accept its terms on the model page, add HF_TOKEN in "
+                               "Colab Secrets, run Setup again, then retry.") from None
+        if name in ("RepositoryNotFoundError", "EntryNotFoundError", "RemoteEntryNotFoundError"):
+            raise RuntimeError(f"Not found on Hugging Face: {src}. Check the name (private repos need HF_TOKEN).") from None
+        raise
+
+
+def _curl(args: list[str], dst: Path, src: str) -> None:
+    """Download to <dst>.part (resumed if a partial is there) and rename only when complete:
+    an interrupted download never leaves a file that looks finished."""
+    part = dst.with_name(dst.name + ".part")
+    subprocess.run(["curl", "-fL", "--retry", "3", "-C", "-", *args, "-o", str(part), src], check=True)
+    part.replace(dst)
+
+
+def _fetch(src: str, dst_dir: Path) -> Path:
+    from huggingface_hub import hf_hub_download  # downloads to .incomplete and resumes on its own
     if hf := _hf_link(src):
         return Path(hf_hub_download(hf[0], hf[1], revision=hf[2], local_dir=dst_dir))
     if src.startswith("http"):
         if "civitai.com" in src:
             # file name comes from Content-Disposition; token from Colab Secrets / env
             import os
+            import tempfile
             hdr = ["-H", f"Authorization: Bearer {os.environ['CIVITAI_TOKEN']}"] if os.environ.get("CIVITAI_TOKEN") else []
-            r = subprocess.run(["curl", "-fLJ", "--retry", "3", *hdr, "--output-dir", str(dst_dir), "-O",
-                                "-w", "%{filename_effective}", src], check=True, capture_output=True, text=True)
-            return Path(r.stdout.strip())
+            with tempfile.TemporaryDirectory(dir=dst_dir, prefix=".dl_") as tmp:  # a failed download leaves nothing
+                r = subprocess.run(["curl", "-fLJ", "--retry", "3", *hdr, "--output-dir", tmp, "-O",
+                                    "-w", "%{filename_effective}", src], check=True, capture_output=True, text=True)
+                got = Path(r.stdout.strip())
+                dst = dst_dir / got.name
+                shutil.move(str(got), dst)
+            return dst
         dst = dst_dir / src.split("?")[0].rsplit("/", 1)[-1]
         if not dst.exists():
-            subprocess.run(["curl", "-fL", "--retry", "3", "-o", str(dst), src], check=True)
+            _curl([], dst, src)
         return dst
     org, repo, file = src.split("/", 2)
     return Path(hf_hub_download(f"{org}/{repo}", file, local_dir=dst_dir))
