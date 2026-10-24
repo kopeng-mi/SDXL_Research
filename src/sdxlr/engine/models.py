@@ -35,6 +35,7 @@ from PIL import Image
 
 from ..paths import CONTROLNETS, FP16_VAE, MODELS, PREVIEWS, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, te_prequantized, z_key
 from .keys import needs_tiling, reuse_plan, z_embed_key
+from .worker import UserError  # a plain sentence for the user, not an engine error
 from .. import loraformat
 from ..prompt import encode_sdxl
 
@@ -129,7 +130,7 @@ class Engine:
         self._prev = None  # live preview decoder (engine/preview.py), made on first use
         self._cn = None  # (name, ZImageControlNetModel): one ControlNet in VRAM at a time
         self._cn_pipes: dict = {}
-        self._fused: tuple | None = None  # SDXL LoRA set merged into the weights (SDXLR_FUSE=1)
+        self._fused: tuple | None = None  # SDXL LoRA set merged into the weights (default; SDXLR_FUSE=0 = off)
 
     # ---- model ----
     def unload(self) -> None:
@@ -305,7 +306,9 @@ class Engine:
 
     def set_loras(self, loras: list[tuple[str, float]]) -> None:
         want = tuple((p, round(float(w), 4)) for p, w in loras if p and w != 0)
-        fuse = self.kind == "sdxl" and os.environ.get("SDXLR_FUSE") == "1"  # GGUF/bnb weights (Z-Image) can't be fused
+        # fused by default: T4, 3 LoRAs 34.7 -> 20.8 s, 1 LoRA 25.0 -> 19.5 s; SDXLR_FUSE=0 turns it off.
+        # GGUF/bnb weights (Z-Image) can't be fused
+        fuse = self.kind == "sdxl" and os.environ.get("SDXLR_FUSE", "1") == "1"
         if self._fused is not None and self._fused != want:
             self.pipe.unfuse_lora()  # back to the base weights before the set changes (or an adapter is evicted)
             self._fused = None
@@ -369,7 +372,7 @@ class Engine:
             torch.cuda.empty_cache()
             path = MODELS / "zimage_cn" / CONTROLNETS[name][1]
             if not path.exists():
-                raise RuntimeError("The ControlNet file is not downloaded yet. Turn the option off and on again to fetch it.")
+                raise UserError("The ControlNet file is not downloaded yet. Turn the option off and on again to fetch it.")
             free0 = torch.cuda.mem_get_info()[0]
             cn = zcontrol.load_controlnet(str(path)).to("cuda")
             free1 = torch.cuda.mem_get_info()[0]
@@ -379,7 +382,7 @@ class Engine:
                 del cn
                 gc.collect()
                 torch.cuda.empty_cache()
-                raise RuntimeError("Not enough GPU memory for this option next to the loaded model. Use the plain version.")
+                raise UserError("Not enough GPU memory for this option next to the loaded model. Use the plain version.")
             self._cn = (name, cn)
         key = (name, zero_calls)
         if key not in self._cn_pipes:
@@ -538,7 +541,7 @@ class Engine:
             self._drop_cn()
         if blend == "controlnet":
             if self.kind != "zimage":
-                raise RuntimeError("The better blend is for Z-Image only.")
+                raise UserError("The better blend is for Z-Image only.")
             return self._inpaint_cn(job, img, m)
         if self.kind == "zimage":
             if self._inpaint is None:
@@ -586,6 +589,8 @@ class Engine:
         W, H = (cw // m) * m, (ch // m) * m
         big = src.resize((W, H), Image.LANCZOS)
         from .keys import tile_starts
+        if tile_cn:
+            tile = min(tile, 1024)  # the ControlNet's 2 GB next to Q8: 1.2 MP tiles ran out of VRAM on a T4
         xs, tw = tile_starts(W, tile, overlap, m)
         ys, th = tile_starts(H, tile, overlap, m)
         boxes = [(x, y, min(x + tw, W), min(y + th, H)) for y in ys for x in xs]
@@ -594,7 +599,15 @@ class Engine:
         for i, (x0, y0, x1, y1) in enumerate(boxes):
             sub = Job(**{**job.__dict__, "image": big.crop((x0, y0, x1, y1)), "mask": None, "count": 1,
                          "seed": seed, "on_step": None, "on_preview": None})
-            piece = self._tile_cn(sub, sub.image, seed) if tile_cn and self.kind == "zimage" else self._run(sub, seed)[0]
+            try:
+                piece = self._tile_cn(sub, sub.image, seed) if tile_cn and self.kind == "zimage" else self._run(sub, seed)[0]
+            except torch.OutOfMemoryError:
+                self._drop_cn()
+                gc.collect()
+                torch.cuda.empty_cache()
+                raise UserError("Not enough GPU memory for this upscale"
+                                   + (" with the tile detail model. Turn it off, or try 1.5x." if tile_cn else
+                                      ". Try 1.5x.")) from None
             out = piece.resize((x1 - x0, y1 - y0), Image.LANCZOS)
             # weight falls off linearly over the overlap, so seams blend
             wx = np.minimum(np.arange(x1 - x0) + 1, np.arange(x1 - x0)[::-1] + 1).clip(max=overlap) / overlap

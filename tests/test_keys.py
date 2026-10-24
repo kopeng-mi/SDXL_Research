@@ -60,7 +60,7 @@ def test_tiling_threshold() -> None:
 
 def test_prequantized_encoder() -> None:
     from sdxlr.paths import Z_ENCODERS
-    assert te_prequantized(Z_ENCODERS["unsloth"]) and not te_prequantized(Z_ENCODERS["official"])
+    assert te_prequantized("unsloth/Z-Image-Turbo-unsloth-bnb-4bit:text_encoder") and not te_prequantized(Z_ENCODERS["official"])
     assert not te_prequantized(Z_ENCODERS["abliterated"])
 
 

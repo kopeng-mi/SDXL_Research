@@ -284,8 +284,7 @@ def page(S):
         with ui.expansion("Model options").classes("w-full"):
             with ui.column().classes("w-full gap-2").bind_visibility_from(S, "kind", value="Z-Image"):
                 labeled("Prompt reader (text encoder)", ui.select(
-                    {"official": "Official", "abliterated": "Uncensored (follows more prompts)",
-                     "unsloth": "Fast 4-bit (unsloth, being tested)"},
+                    {"official": "Official", "abliterated": "Uncensored (follows more prompts)"},
                     with_input=True, new_value_mode="add-unique").bind_value(S, "z_te"),
                     "The part that reads your prompt. You can also type a Hugging Face repo")
                 with ui.column().classes("gap-0"):

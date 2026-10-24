@@ -46,15 +46,14 @@ Z_MODELS = {
     "turbo Q6": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q6_K.gguf",  # 5.9 GB
     "turbo Q5": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q5_K_M.gguf",  # 5.6 GB
     "turbo Q4": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q4_K_M.gguf",  # 5.0 GB
-    "turbo 4-bit (unsloth)": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit:transformer",  # 3.3 GB, bnb nf4, being tested
+    "turbo 4-bit (unsloth)": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit:transformer",  # 3.3 GB nf4: same speed, 6 GB VRAM
 }
-Z_SIZES_GB = {"turbo Q8": 7.2, "turbo Q6": 5.9, "turbo Q5": 5.6, "turbo Q4": 5.0, "turbo 4-bit (unsloth)": 3.3}  # file sizes of the built-in GGUFs
+Z_SIZES_GB = {"turbo Q8": 7.2, "turbo Q6": 5.9, "turbo Q5": 5.6, "turbo Q4": 5.0, "turbo 4-bit (unsloth)": 3.3}  # download sizes of the built-in models
 Z_ENCODERS = {
     "official": "Tongyi-MAI/Z-Image-Turbo:text_encoder",
     "abliterated": "BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1",  # fewer refusals in prompt following
-    # pre-quantized nf4 (3.3 GB download, no quantizing on every load); its own bnb config is used. Test option: the
-    # T4 comparison against the official encoder decides whether it becomes the default
-    "unsloth": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit:text_encoder",
+    # unsloth's pre-quantized encoder was tried (T4, 2026-10-24): its packed 4-bit weights do not load through AutoModel
+    # (size mismatch on every Linear), so it is not offered; the official encoder quantized at load stays
 }
 TE_GB = {"nf4": 2.5, "int8": 4.4, "fp16": 7.9, "prequant": 3.4}  # download size of the text encoder variants
 # ControlNet lite files (8 steps, ~1.9 GB each): "union" gives the better inpaint blend, "tile" refines upscale tiles
