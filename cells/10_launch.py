@@ -10,6 +10,10 @@ PULL_FROM_SYNC_REPO = True  #@param {type:"boolean"}
 #@markdown
 #@markdown Open **http://sdxlr:7860** on a device signed in to your Tailscale (the address is also
 #@markdown printed below). Needs TS_AUTHKEY in Secrets. Logs are saved in /content/work/logs.
+#@markdown
+#@markdown **Keep this Colab tab open** and click in it now and then: Colab can stop a session whose notebook
+#@markdown sits idle (often after about 90 minutes), even while you use the app. Everything on the VM is gone then;
+#@markdown trained LoRAs survive in your HF sync repo.
 
 args = ["-m", "sdxlr.webui", "--port", 7860]
 if PULL_FROM_SYNC_REPO:

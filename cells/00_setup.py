@@ -1,6 +1,6 @@
 # %% [md]
 # # SDXL_Research
-# Caption, train, compare and generate SDXL LoRAs on the Colab free T4.
+# Caption, train, compare and generate SDXL and Z-Image LoRAs on the Colab free T4, and edit photos.
 #
 # 1. **Runtime > Change runtime type > T4 GPU**
 # 2. **Secrets** (key icon, left): add `HF_TOKEN` (needed for private repos and sync);
@@ -13,7 +13,7 @@ import os, subprocess, sys
 from pathlib import Path
 
 REPO_URL = "https://github.com/kopeng-mi/SDXL_Research.git"  #@param {type:"string"}
-BRANCH = "step3-nicegui"  #@param {type:"string"}
+BRANCH = "step4-overhaul"  #@param {type:"string"}
 REPO = Path("/content/SDXL_Research")
 
 if not REPO.exists():
