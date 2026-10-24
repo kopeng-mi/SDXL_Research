@@ -21,7 +21,9 @@ generate with a simple, clean UI that mixes LoRAs (Fooocus-like ease of use).
 
 | # | Decision |
 |---|---|
-| UI | Gradio 6 with a custom theme + CSS (not ComfyUI, not Fooocus) |
+| UI | NiceGUI web app over Tailscale (step3+); Gradio removed in step4 (the pin stays: musubi-tuner depends on it) |
+| Engine | its own worker process (step4): the web process never imports torch; RAM guard + oom_score_adj keep the session alive |
+| Editing | crop-and-stitch inpaint with feathered, pixel-exact paste-back for both models; Z-Image ControlNet lite as "better blend" |
 | Notebook | 2 cells only: **Setup** (installs everything) and **Launch** (opens the app) |
 | Env | uv-managed Python 3.12 venv at `/content/venv`; never the Colab system Python |
 | Processes | the kernel only orchestrates; every GPU job is a child process in the venv |
@@ -36,7 +38,7 @@ generate with a simple, clean UI that mixes LoRAs (Fooocus-like ease of use).
 ## Pinned stack
 
 torch 2.14.1 (cu130), diffusers 0.40.0, transformers 5.17.0, accelerate 1.15.0,
-peft 0.21.2, gradio 6.30.0, bitsandbytes 0.50.2. kohya and musubi pin the same
+peft 0.21.2, gradio 6.30.0 (musubi's), bitsandbytes 0.50.2, nicegui 3.18.0, pillow-heif 1.8.1. kohya and musubi pin the same
 diffusers/transformers/accelerate, so everything shares one venv.
 
 ## Findings (measured on T4)
@@ -59,6 +61,22 @@ diffusers/transformers/accelerate, so everything shares one venv.
 | UI pass, Z-Image Q8 896x1152 | Fast (6) 28 s, Speed (9) 41 s, Quality (12) 54 s, inpaint 34 s; VRAM shows 14.5 GB (mostly CUDA cache) |
 | WD EVA02 v3 tagger | works on T4; tags like "dog, tongue out, orange background" |
 
+## Findings step4 (T4, 2026-10-24, `tools/t4_check.py`)
+
+| Item | Result |
+|---|---|
+| Z-Image Q8 Speed 896x1152 | **38.6 s cold, 35.1 s warm** (denoise 27-30 s, decode 2 s); live preview from step 2 |
+| Q6_K / Q4_K_M | 42-46 s: **slower than Q8** (K-quant dequant cost); they only save disk/VRAM. Q8 stays the default |
+| Q8 load | 193 s incl. downloads; worker RAM peak 9.6 GB (3.4 GB left free) before the DiT went to the GPU early |
+| unsloth bnb-4bit text encoder | its load next to a RAM-resident Q8 tripped the RAM guard; rerun after the early-GPU fix (see below) |
+| Painted edit (Z, ~1 MP crop) | plain 37-39 s; ControlNet lite "better blend" 47-51 s (peak VRAM 13.8 GB) |
+| Extend 25 % per side / whole image | 45 s / 26 s |
+| Upscale 2x (Z) | 136-181 s for ~4.7 MP (6-8 tiles of 1024); tile ControlNet 347 s. Tiles now balanced (fewest of <= 1280 px) |
+| 24 MP photo, painted edit | 38 s, worker RAM 2.8 GB (work copy capped at ~1.2 MP) |
+| SDXL base | load 61 s; gen 20 s; painted 19 s; extend 27 s; whole 15 s; upscale 2x 57 s |
+| RAM guard | a synthetic hog (0.5 GB/s) in the worker: **session survived**, next Generate worked. At 700 MB the kernel OOM killer won the race, so the guard now acts at 1 GB |
+| ControlNet left loaded | 2 GB VRAM next to Q8 pushed the next upscale into OOM retries: it is now freed when an op doesn't use it |
+
 ## Bugs found and fixed
 
 - kohya text-encoder LoRAs failed to load in diffusers: transformers 5 dropped
@@ -73,12 +91,12 @@ diffusers/transformers/accelerate, so everything shares one venv.
 ## Architecture
 
 ```
-notebook: Setup cell -> bootstrap venv; Launch cell -> python -m sdxlr.app
-app (one process, owns the in-process image engine)
- ├─ JobManager: GPU jobs one at a time (caption/train/compare), CPU jobs alongside
- │   (downloads, zips); unloads the engine before a GPU job, reloads after
- ├─ engine: SDXL or Z-Image, LoRA adapter cache, prompt cache, OOM retry, inpaint
- └─ /content/work: models, loras, runs, presets, outputs, settings.json  <-> private HF repo
+notebook: Setup cell -> bootstrap venv; Launch cell -> python -m sdxlr.webui (NiceGUI, no torch)
+web process: pages read cached file indexes; RAM guard; job queue
+ ├─ engine worker process (torch): SDXL or Z-Image, LoRA cache by VRAM budget, prompt caches, edits,
+ │   previews; restartable, killed for GPU jobs and when RAM runs low
+ ├─ job processes: caption / train / compare / import / download, one GPU job at a time
+ └─ /content/work: models, loras, runs, outputs, sessions, logs  <-> private HF repo
 ```
 
 ## UI plan (5 tabs)
@@ -133,9 +151,19 @@ Next:
 2. 768 px Z-Image training
 3. Merge `step2-polish` into `main`
 
+Branch `step4-overhaul` (overhaul plan in `docs/OVERHAUL_PLAN.md`, state in `docs/HANDOVER.md`):
+engine worker process + RAM guard, brush-mask editing (painted part / whole / extend / upscale) with
+crop-and-stitch and ControlNet lite, live previews, Z-Image prompt cache, LoRA family checks and trigger chips,
+HEIC uploads, dataset dedupe, NiceGUI rework (toolbar, sticky image, connection line). Measured on T4 above.
+
 ## Testing notes (for the agent)
 
 - `colab exec` drops long cells (10 s read timeout): run long jobs detached on the
   VM (`nohup ... > /content/logs/x.log`) and poll with short commands.
 - Git Bash rewrites `/content/...` paths: use `MSYS_NO_PATHCONV=1` for `colab upload`.
 - The Herdr side pane runs nushell; check for the VM prompt before sending bash.
+- The home router's DNS often refuses new `*.colab.dev` hosts: run the colab CLI through a wrapper that resolves
+  them via 1.1.1.1 (patch `socket.getaddrinfo` before importing `colab_cli.cli`), or switch networks.
+- Long checks run detached on the VM (`tools/t4_check.py`, `tools/train_check.py`) and write
+  `WORK/t4_check/report.md` / `WORK/train_check/report.md`; poll their logs with short `colab exec` calls.
+
