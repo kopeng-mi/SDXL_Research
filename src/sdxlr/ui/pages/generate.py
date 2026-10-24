@@ -6,7 +6,7 @@ import copy
 import json
 from pathlib import Path
 
-from nicegui import run, ui
+from nicegui import app, run, ui
 
 from ... import presets
 from ...activity import Cancelled, act
@@ -14,6 +14,8 @@ from ...service import files
 from ..core import (ASPECTS, MAX_UPLOAD, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, engc,
                     err, generate_blocking, is_loaded, load_blocking, lora_names, model_names, picked_label, reuse,
                     save_upload, task_is_loading, thumb, url, z_names)
+from ..components.before_after import BeforeAfter
+from ..components.mask_painter import MaskPainter
 from ..theme import button, labeled, main_button, seg
 
 PRESET_KEYS = ("kind", "sdxl_model", "z_model", "mode", "prompt", "negative", "style", "aspect", "count", "seed",
@@ -41,7 +43,7 @@ async def do_load(S):
         ui.notify(err(e), type="negative", multi_line=True)
 
 
-async def do_generate(S):
+async def do_generate(S, on_done=None):
     if busy_task():  # the button is disabled while busy; this guards a fast double click
         return
     try:
@@ -56,9 +58,11 @@ async def do_generate(S):
         task.finish(info)
         files.poke()
         S.update(image=paths[0], info=info, last_seed=seed, boxes=[])
-        if tool:  # keep working on the new result; the original stays in the recent images
-            S["src"] = paths[0]
-            ui.notify(f"{TOOL_LABEL[tool]}: done. The original is still in the recent images", type="positive")
+        if on_done:
+            on_done(paths, tool)
+        if tool:
+            more = f" ({len(paths)} variations are in the recent images)" if len(paths) > 1 else ""
+            ui.notify(f"{TOOL_LABEL[tool]}: done{more}", type="positive")
     except Cancelled:
         task.fail("")
         ui.notify("Cancelled")
@@ -209,7 +213,7 @@ def page(S):
 
         # ----- go -----
         with ui.row().classes("w-full no-wrap gap-2 items-center"):
-            gen_b = main_button("Generate", lambda: do_generate(S))
+            gen_b = main_button("Generate", lambda: go())
             stop_b = button("Cancel", lambda: (busy_task() and busy_task().cancel()), kind="stop").style("height:46px")
         ui.label().bind_text_from(S, "info", lambda v: f"Last image: {v}" if v else "").classes("hint tnum")
         tool_hint = ui.label().classes("hint")
@@ -244,32 +248,125 @@ def page(S):
 
     # ----- image side -----
     TOOL_TEXT = {
-        "area": "Change an area: drag on the image to mark what to change. Your prompt describes the new content.",
+        "area": "Change the painted part: paint over what to change. Your prompt describes the new content.",
         "whole": "Change the whole image: your prompt guides it. Low strength keeps the photo, high reimagines it.",
+        "extend": "Extend: add space around the image and fill it in. Say how much to add on each side.",
         "upscale": "Upscale: makes the image bigger and adds detail in tiles. The prompt is optional guidance.",
     }
+    code = app.storage.browser.get("code")
+    painter = {"el": None, "src": None, "empty": True, "device": False}
+    pending = {"result": None, "same_aspect": False}  # the edit result being reviewed (Keep / Try again / Undo)
+    shown = {"img": None, "tool": "x", "cmp": None, "need": None, "recent": None}
+
+    def in_tools(*tools):
+        return lambda v: v in tools
+
+    def painter_set(**props):
+        if painter["el"] is not None:
+            painter["el"].set(**props)
+
+    def painter_do(action):
+        if painter["el"] is not None:
+            getattr(painter["el"], action)()
+
+    def set_extend(i, v):
+        e = list(S["extend"])
+        e[i] = max(0.0, min(100.0, float(v or 0)))
+        S["extend"] = e
+
+    def extend_to(ratio):
+        """Percent per side so the image reaches this width/height ratio (split evenly)."""
+        m = files.meta(S["src"]) if S["src"] else None
+        if not m or not m.get("size"):
+            ui.notify("Pick the image first", type="warning")
+            return
+        w, h = m["size"]
+        if ratio >= w / h:
+            side = (h * ratio / w - 1) * 50
+            S["extend"] = [0, round(side, 1), 0, round(side, 1)]
+        else:
+            side = (w / ratio / h - 1) * 50
+            S["extend"] = [round(side, 1), 0, round(side, 1), 0]
+        extend_row.clear()
+        draw_extend()
+
     with right:
         banner = ui.column().classes("banner w-full gap-2")
         with banner:
             tool_l = ui.label().classes("t-small")
+            seg({"area": "Painted part", "whole": "Whole image", "extend": "Extend", "upscale": "Upscale"}, S, "tool")
+            # painted part: tools, then sliders
+            with ui.row().classes("w-full items-center gap-2") as area_tools:
+                seg({"move": "Move", "brush": "Brush", "eraser": "Eraser", "box": "Box"}, S, "ptool",
+                    on_change=lambda e: painter_set(tool=e.value))
+                button("Undo", lambda: painter_do("undo"), icon="undo")
+                button("Invert", lambda: painter_do("invert"), icon="flip")
+                button("Clear", lambda: painter_do("clear"), icon="backspace")
+            area_tools.bind_visibility_from(S, "tool", backward=in_tools("area"))
+            with ui.row().classes("w-full items-center no-wrap gap-3") as area_sliders:
+                for key, label, lo, hi, step in (("brush", "Brush", 8, 200, 4), ("feather", "Feather", 0, 40, 1)):
+                    with ui.row().classes("grow items-center no-wrap gap-2"):
+                        ui.label().bind_text_from(S, key, lambda v, label=label: f"{label} {v}").classes("t-small tnum") \
+                            .style("white-space:nowrap")
+                        ui.slider(min=lo, max=hi, step=step,
+                                  on_change=(lambda e: painter_set(size=int(e.value))) if key == "brush" else None) \
+                            .bind_value(S, key).classes("grow")
+            area_sliders.bind_visibility_from(S, "tool", backward=in_tools("area"))
             with ui.row().classes("w-full items-center no-wrap gap-3"):
-                for key, tip, lo, hi in (("strength", "Low keeps more of the original; 1 repaints the area fully", 0.1, 1.0),
+                for key, tip, lo, hi in (("strength", "Low keeps more of the original; 1 repaints the part fully", 0.1, 1.0),
                                          ("whole_strength", "0.3 keeps the photo, 0.8 reimagines it", 0.1, 1.0),
                                          ("up_strength", "0.2 to 0.35 adds detail without changing the image", 0.1, 0.6)):
                     with ui.row().classes("grow items-center no-wrap gap-3") as row:
                         ui.label().bind_text_from(S, key, lambda v: f"Strength {v:.2f}").classes("t-small tnum") \
                             .style("white-space:nowrap").tooltip(tip)
                         ui.slider(min=lo, max=hi, step=0.05).bind_value(S, key).classes("grow")
-                    row.bind_visibility_from(S, "tool", value={"strength": "area", "whole_strength": "whole",
-                                                               "up_strength": "upscale"}[key])
-                with ui.row().classes("items-center no-wrap gap-1") as scale_row:
-                    ui.label("Size").classes("t-small")
-                    seg({1.5: "1.5x", 2.0: "2x"}, S, "up_scale")
-                scale_row.bind_visibility_from(S, "tool", value="upscale")
-                clear_marks = button("Clear marks", lambda: (S["boxes"].clear(), draw_canvas()))
-                clear_marks.bind_visibility_from(S, "tool", value="area")
-                button("Done", lambda: set_tool(None))
-        canvas = ui.element("div").classes("canvas w-full")
+                    row.bind_visibility_from(S, "tool", backward=in_tools({"strength": "area", "whole_strength": "whole",
+                                                                           "up_strength": "upscale"}[key]))
+            with ui.row().classes("items-center no-wrap gap-2") as whole_row:
+                ui.switch("Keep the original size").bind_value(S, "keep_size") \
+                    .tooltip("The result is made at about 1 MP, then scaled back to the photo's size")
+            whole_row.bind_visibility_from(S, "tool", backward=in_tools("whole"))
+            with ui.column().classes("w-full gap-1") as extend_box:
+                extend_row = ui.row().classes("w-full items-end no-wrap gap-2")
+
+                def draw_extend():
+                    with extend_row:
+                        for i, name in enumerate(("Top %", "Right %", "Bottom %", "Left %")):
+                            ui.number(name, value=S["extend"][i], min=0, max=100, step=5, format="%.0f",
+                                      on_change=lambda e, i=i: set_extend(i, e.value)).props("outlined dense").classes("grow")
+
+                draw_extend()
+                with ui.row().classes("items-center gap-2"):
+                    ui.label("Reach").classes("t-small")
+                    button("Square", lambda: extend_to(1.0))
+                    button("4:5", lambda: extend_to(4 / 5))
+                    button("3:2", lambda: extend_to(3 / 2))
+                    button("16:9", lambda: extend_to(16 / 9))
+                    button("Reset", lambda: (S.__setitem__("extend", [0, 0, 0, 0]), extend_row.clear(), draw_extend()))
+            extend_box.bind_visibility_from(S, "tool", backward=in_tools("extend"))
+            with ui.row().classes("items-center no-wrap gap-1") as scale_row:
+                ui.label("Size").classes("t-small")
+                seg({1.5: "1.5x", 2.0: "2x"}, S, "up_scale")
+            scale_row.bind_visibility_from(S, "tool", backward=in_tools("upscale"))
+            with ui.row().classes("items-center gap-2") as var_row:
+                ui.label("Variations").classes("t-small")
+                seg({1: "1", 2: "2", 3: "3", 4: "4"}, S, "edit_count")
+            var_row.bind_visibility_from(S, "tool", backward=in_tools("area", "whole", "extend"))
+            button("Done", lambda: set_tool(None))
+        canvas = ui.element("div").classes("canvas w-full").style("flex-direction:column")
+        with canvas:
+            view_box = ui.element("div").classes("w-full").style("display:flex; justify-content:center; align-items:center")
+            painter_box = ui.element("div").classes("w-full")
+            with ui.column().classes("overlay gap-1") as ov:
+                overlay = {"box": ov, "title": ui.label().classes("work"), "bar": ui.html("", sanitize=False).classes("w-full"),
+                           "detail": ui.label().classes("hint tnum")}
+            ov.set_visibility(False)
+        with ui.row().classes("w-full items-center gap-2") as result_bar:
+            ui.label("Keep this result?").classes("t-small")
+            button("Keep", lambda: keep(), icon="check")
+            button("Try again", lambda: try_again(), icon="refresh")
+            button("Undo", lambda: undo_result(), icon="undo")
+            ui.switch("Before / after").bind_value(S, "compare_on")
         with ui.row().classes("w-full items-center gap-2"):
             earlier = ui.label("").classes("hint")
             ui.space()
@@ -283,7 +380,7 @@ def page(S):
                 except Exception as ex:
                     ui.notify(err(ex), type="negative")
                     return
-                S.update(image=p, src=p, boxes=[])
+                S.update(image=p, src=p if S["tool"] else None, mask_id=None)
                 draw_canvas()
                 ui.notify("Image added. Pick what to do with it below", type="positive")
 
@@ -293,58 +390,121 @@ def page(S):
             button("Upload an image", lambda: up.run_method("pickFiles"), icon="upload")
         with ui.row().classes("w-full items-center gap-2") as actions:
             reuse_b = button("Reuse its settings", lambda: reuse_shown(), icon="settings_backup_restore")
-            area_b = button("Change an area", lambda: set_tool("area"), icon="crop_free")
+            area_b = button("Change a part", lambda: set_tool("area"), icon="brush")
             whole_b = button("Change the whole image", lambda: set_tool("whole"), icon="auto_fix_high")
+            extend_b = button("Extend", lambda: set_tool("extend"), icon="aspect_ratio")
             up_b = button("Upscale", lambda: set_tool("upscale"), icon="open_in_full")
             ui.space()
             dl_b = button("Download", lambda: ui.download.file(S["image"]), icon="download")
-            clear_b = button("Clear", lambda: (S.update(image=None, tool=None, boxes=[]), draw_canvas()), icon="close") \
+            clear_b = button("Clear", lambda: (S.update(image=None, tool=None, mask_id=None), draw_canvas()), icon="close") \
                 .tooltip("Empty the image area. The image stays in History")
         recent = ui.row().classes("w-full gap-2")
 
-    shown = {"img": None, "tool": "x", "boxes": -1, "recent": None}
-    drag = {}
-
-    def svg_boxes():
-        return "".join(f'<rect x="{min(a, c)}" y="{min(b, d)}" width="{abs(c - a)}" height="{abs(d - b)}" '
-                       f'fill="rgba(232,163,61,.25)" stroke="#E8A33D" stroke-width="4"/>' for a, b, c, d in S["boxes"])
-
-    def on_mouse(e):
-        if e.type == "mousedown":
-            drag["p"] = (e.image_x, e.image_y)
-        elif e.type == "mouseup" and "p" in drag:
-            x0, y0 = drag.pop("p")
-            if abs(e.image_x - x0) > 8 and abs(e.image_y - y0) > 8:
-                S["boxes"].append([x0, y0, e.image_x, e.image_y])
-                draw_canvas()
-
-    overlay = {}
+    def reviewing() -> bool:
+        return bool(pending["result"]) and pending["result"] == S["image"]
 
     def shown_img():
-        return S["src"] if S["tool"] else S["image"]
+        return S["image"] if (reviewing() or not S["tool"]) else S["src"]
+
+    def compare_key():
+        return (pending["result"], S["compare_on"]) if reviewing() else None
+
+    def mask_preload(src) -> str | None:
+        """'Edit again': the mask saved next to an area result, if this image has one."""
+        m = files.meta(src)
+        p = Path(str(src)[:-4] + "_mask.png")
+        return url(p) if m and m.get("tool") == "area" and p.exists() else None
+
+    def on_painter_changed(args):
+        painter["empty"] = bool(args.get("empty", True))
+
+    def on_device(args):
+        if args.get("coarse") and not painter["device"]:  # touch screens start in Move, so a finger can scroll the page
+            painter["device"] = True
+            if S["ptool"] == "brush":
+                S["ptool"] = "move"
+                painter_set(tool="move")
 
     def draw_canvas():
         img = shown_img()
-        shown.update(img=img, tool=S["tool"], boxes=len(S["boxes"]))
-        canvas.clear()
-        with canvas:
-            if img and Path(img).exists():
-                if S["tool"] == "area":
-                    ii = ui.interactive_image(url(img), on_mouse=on_mouse, events=["mousedown", "mouseup"]).classes("w-full")
-                    ii.content = svg_boxes()
+        if S["tool"] == "area" and shown["tool"] != "area":
+            S["strength"] = 0.85 if S["kind"] == "Z-Image" else 0.75  # the plan's defaults per model
+        shown.update(img=img, tool=S["tool"], cmp=compare_key(), need=None)
+        src = S["src"] if S["tool"] else None
+        if src != painter["src"]:  # a new source image: a fresh painter and an empty mask
+            painter_box.clear()
+            painter.update(el=None, src=None, empty=True)
+            S["mask_id"] = None
+            if src and Path(src).exists():
+                u = files.display_url(src)  # never the original: it may be 24 MP
+                if u is None:
+                    shown["need"] = src
                 else:
-                    ui.image(url(img)).classes("w-full").props("fit=contain no-transition")
-            else:
+                    with painter_box:
+                        painter["el"] = MaskPainter(u, S["ptool"], int(S["brush"]), mask_preload(src),
+                                                    on_changed=on_painter_changed, on_device=on_device)
+                    painter["src"] = src
+        painter_box.set_visibility(S["tool"] == "area" and not reviewing() and painter["el"] is not None)
+        view_box.clear()
+        with view_box:
+            if not img or not Path(img).exists():
                 with ui.column().classes("items-center gap-1"):
                     ui.label("Your image shows up here").classes("muted")
                     ui.label("Write a prompt and press Generate, or upload an image to change or upscale it.") \
                         .classes("hint")
-            with ui.column().classes("overlay gap-1") as ov:
-                overlay["title"] = ui.label().classes("work")
-                overlay["bar"] = ui.html("", sanitize=False).classes("w-full")
-                overlay["detail"] = ui.label().classes("hint tnum")
-            overlay["box"] = ov
-            ov.set_visibility(False)
+            elif S["tool"] == "area" and not reviewing():
+                if painter["el"] is None:
+                    ui.label("Preparing the image…").classes("muted")
+            elif reviewing() and S["compare_on"] and pending["same_aspect"] and S["src"] and files.display_url(S["src"]):
+                BeforeAfter(files.display_url(S["src"]), files.display_url(img) or url(img))
+            else:
+                u = files.display_url(img)
+                if u is None:
+                    shown["need"] = shown["need"] or img
+                ui.image(u or url(img)).classes("w-full").props("fit=contain no-transition")
+
+    def keep():
+        S.update(src=S["image"], mask_id=None)
+        pending["result"] = None
+        draw_canvas()
+
+    def undo_result():
+        if S["src"]:
+            S["image"] = S["src"]
+        pending["result"] = None
+        draw_canvas()
+
+    async def try_again():
+        S["seed"] = -1  # a new seed
+        await go()
+
+    async def go():
+        """Generate; for a painted edit the mask goes to the app first."""
+        if busy_task():
+            return
+        if S["tool"] == "area":
+            if painter["el"] is None or painter["empty"]:
+                ui.notify("Paint the part to change first", type="warning")
+                return
+            try:
+                S["mask_id"] = await painter["el"].export(code)
+            except ValueError as ex:
+                ui.notify(str(ex), type="warning")
+                return
+        await do_generate(S, on_done)
+
+    def on_done(paths, tool):
+        files.poke()
+        if not tool or tool == "upscale":
+            pending["result"] = None
+            return
+        try:
+            from PIL import Image
+            with Image.open(paths[0]) as a, Image.open(S["src"]) as b:  # sizes only: a header read
+                same = abs(a.width / a.height - b.width / b.height) < 0.01
+        except Exception:
+            same = False
+        pending.update(result=paths[0], same_aspect=same)
 
     def draw_recent():
         items = files.items(12)
@@ -369,7 +529,8 @@ def page(S):
         if tool and not S["image"]:
             ui.notify("Generate, pick or upload an image first", type="warning")
             return
-        S.update(tool=tool, src=S["image"] if tool else None, boxes=[])
+        S.update(tool=tool, src=S["image"] if tool else None)
+        pending["result"] = None
         draw_canvas()
 
     def reuse_shown():
@@ -387,8 +548,12 @@ def page(S):
                 ui.notify(f"Missing LoRAs (add them in Library): {', '.join(missing)}", type="warning")
 
     def tick():
-        if shown["img"] != shown_img() or shown["tool"] != S["tool"] or shown["boxes"] != len(S["boxes"]):
+        if S["tool"] and not S["src"]:
+            S["src"] = S["image"]
+        if (shown["img"] != shown_img() or shown["tool"] != S["tool"] or shown["cmp"] != compare_key()
+                or (shown["need"] and files.display_ready(shown["need"]))):
             draw_canvas()
+        result_bar.set_visibility(reviewing())
         draw_recent()
         t = busy_task()
         # model card
@@ -431,7 +596,9 @@ def page(S):
             stop_b.set_visibility(False)
             if "box" in overlay:
                 overlay["box"].set_visibility(False)
-        th = {"area": "Uses your prompt for the marked area.", "whole": "Uses your prompt and the strength above the image.",
+        th = {"area": "Paint over the part to change, then press the button. The prompt describes what should be there.",
+              "whole": "Uses your prompt and the strength above the image.",
+              "extend": "Fills the new space around the image. The prompt describes the whole scene.",
               "upscale": "Press Done above the image to go back to making new images."}.get(S["tool"], "")
         if tool_hint.text != th:
             tool_hint.text = th
@@ -441,7 +608,7 @@ def page(S):
             tool_l.text = TOOL_TEXT[S["tool"]]
         has = bool(S["image"])
         actions.set_visibility(has)
-        for b in (area_b, whole_b, up_b):
+        for b in (area_b, whole_b, extend_b, up_b):
             b.set_visibility(not S["tool"])
         meta_p = files.meta(S["image"]) if has else None
         uploaded = bool(meta_p and meta_p.get("uploaded"))
@@ -461,7 +628,7 @@ def page(S):
     async def on_key(e):
         a = e.args or {}
         if a.get("key") == "Enter" and (a.get("ctrlKey") or a.get("metaKey")):
-            await do_generate(S)
+            await go()
 
     prompt.on("keydown", on_key, args=["key", "ctrlKey", "metaKey"])
     draw_canvas()

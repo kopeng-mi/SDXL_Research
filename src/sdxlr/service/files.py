@@ -176,6 +176,11 @@ def thumb(p: Path, size: int = 320) -> str:
     return url(p) if Path(p).relative_to(WORK).parts[0] in SERVED else PLACEHOLDER
 
 
+def display_ready(p) -> bool:
+    """True once the display copy exists (a memory check, safe in a timer)."""
+    return (str(p), DISPLAY) in _ready
+
+
 def display_url(p) -> str | None:
     """URL of the display copy of an image, or None while the refresh thread is still making it."""
     key = (str(p), DISPLAY)
