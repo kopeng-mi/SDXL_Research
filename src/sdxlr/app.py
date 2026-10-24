@@ -532,8 +532,9 @@ def build() -> gr.Blocks:
                                              placeholder="https://… · org/repo/file.zip · /content/drive/MyDrive/… · test")
                         ds_import = gr.Button("Import", variant="primary")
                         gr.Markdown("#### Captions")
-                        cap_model = gr.Dropdown(["qwen", "qwen-2b", "joy"], value="qwen", label="Captioner",
-                                                info="qwen = Qwen3-VL 4B (accurate) · qwen-2b (faster) · joy = JoyCaption (uncensored)")
+                        cap_model = gr.Dropdown(["qwen", "qwen-2b", "joy", "wd"], value="qwen", label="Captioner",
+                                                info="qwen = Qwen3-VL 4B (accurate) · qwen-2b (faster) · joy = JoyCaption (uncensored)"
+                                                     " · wd = WD tagger (tags, for Pony/anime models)")
                         with gr.Row():
                             cap_trigger = gr.Textbox("ohwx_person", label="Trigger word")
                             cap_class = gr.Textbox("woman", label="Class word")

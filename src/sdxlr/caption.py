@@ -1,6 +1,9 @@
 """Caption a folder of images for LoRA training. Runs inside the main venv.
 
-  python -m sdxlr.caption --images DIR --out DIR [--model qwen|joy] [--trigger ohwx_person]
+  python -m sdxlr.caption --images DIR --out DIR [--model qwen|joy|wd] [--trigger ohwx_person]
+
+wd = WD EVA02-Large tagger v3: booru-style tags instead of sentences (fast,
+no prompt; --threshold sets how sure a tag must be).
 
 One model is loaded once per process; the process exits when done, so all
 VRAM/RAM goes back to the system before training starts.
@@ -20,6 +23,7 @@ MODELS = {
     "qwen": "Qwen/Qwen3-VL-4B-Instruct",
     "qwen-2b": "Qwen/Qwen3-VL-2B-Instruct",
     "joy": "fancyfeast/llama-joycaption-beta-one-hf-llava",
+    "wd": "SmilingWolf/wd-eva02-large-tagger-v3",
 }
 
 # Identity LoRA style: describe what should stay promptable, leave out what the
@@ -100,6 +104,37 @@ class Joy:
         return self.proc.batch_decode(ids[:, x["input_ids"].shape[1]:], skip_special_tokens=True)[0]
 
 
+class WD:
+    """WD tagger v3 through timm (same recipe as SmilingWolf's reference script)."""
+
+    def __init__(self, model_id: str, dtype: torch.dtype, threshold: float = 0.35):
+        import csv
+
+        import timm
+        from huggingface_hub import hf_hub_download
+        from timm.data import create_transform, resolve_data_config
+
+        self.dev = "cuda" if torch.cuda.is_available() else "cpu"
+        self.dtype = dtype if self.dev == "cuda" else torch.float32
+        self.model = timm.create_model("hf-hub:" + model_id, pretrained=True).eval().to(self.dev, self.dtype)
+        self.tf = create_transform(**resolve_data_config(self.model.pretrained_cfg, model=self.model))
+        with open(hf_hub_download(model_id, "selected_tags.csv"), encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        self.names = [r["name"] for r in rows]
+        self.keep = [i for i, r in enumerate(rows) if r["category"] in ("0", "4")]  # general + character, no ratings
+        self.threshold = threshold
+
+    @torch.inference_mode()
+    def __call__(self, img: Image.Image, prompt: str, max_new_tokens: int) -> str:
+        px = max(img.size)  # pad to a white square, as the tagger was trained
+        sq = Image.new("RGB", (px, px), (255, 255, 255))
+        sq.paste(img, ((px - img.width) // 2, (px - img.height) // 2))
+        x = self.tf(sq).unsqueeze(0)[:, [2, 1, 0]].to(self.dev, self.dtype)  # model expects BGR
+        probs = torch.sigmoid(self.model(x).float())[0].cpu()
+        tags = sorted(((probs[i].item(), self.names[i]) for i in self.keep if probs[i] > self.threshold), reverse=True)
+        return ", ".join(n.replace("_", " ").replace("(", "\\(").replace(")", "\\)") for _, n in tags)
+
+
 def _clean(text: str) -> str:
     return " ".join(text.replace("\n", " ").split()).strip().strip('"')
 
@@ -115,6 +150,7 @@ def main() -> None:
     ap.add_argument("--max-new-tokens", type=int, default=120)
     ap.add_argument("--limit", type=int, default=0, help="caption only the first N (preview)")
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--threshold", type=float, default=0.35, help="wd: minimum tag confidence")
     a = ap.parse_args()
 
     out = a.out or a.images
@@ -130,7 +166,10 @@ def main() -> None:
     model_id = MODELS.get(a.model, a.model)
     dtype = _dtype()
     t0 = time.time()
-    cap = (Joy if "joycaption" in model_id else Qwen)(model_id, dtype)
+    if "tagger" in model_id:
+        cap = WD(model_id, dtype, a.threshold)
+    else:
+        cap = (Joy if "joycaption" in model_id else Qwen)(model_id, dtype)
     print(f"loaded {model_id} ({dtype}) in {time.time() - t0:.0f}s", flush=True)
 
     done, failed = 0, {}
