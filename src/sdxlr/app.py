@@ -528,7 +528,7 @@ def build() -> gr.Blocks:
                                 sampler = gr.Dropdown(list(SAMPLERS), value="dpmpp_2m_karras", label="Sampler (SDXL)")
                                 clip_skip = gr.Slider(1, 3, 2, step=1, label="Clip skip (SDXL)")
                     with gr.Column(scale=4):
-                        gallery = gr.Gallery(columns=2, height=560, show_label=False)
+                        gallery = gr.Gallery(columns=2, height=560, show_label=False, interactive=False)
                         send_inp = gr.Button("Send selected to Inpaint", size="sm")
                         gr.Markdown("#### LoRAs")
                         lora_inputs = []
