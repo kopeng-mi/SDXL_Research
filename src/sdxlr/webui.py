@@ -353,7 +353,8 @@ HEAD = """
 body, .q-layout, .q-page-container {background:var(--bg) !important; color:var(--text);
   font-family:'IBM Plex Sans', system-ui, sans-serif; font-size:15px; line-height:1.5;}
 .q-field, .q-btn, .q-item, .q-toggle, .q-tab, .q-menu {font-family:inherit;}
-.q-btn {text-transform:none; letter-spacing:0; font-weight:500;}
+.q-btn {text-transform:none; letter-spacing:0; font-weight:500; white-space:nowrap;}
+.q-btn-toggle {flex-shrink:0;}
 .q-drawer {background:var(--panel) !important;}
 .q-drawer--left {border-right:1px solid var(--line);}
 .t-title {font-size:24px; font-weight:500; line-height:1.25;}
@@ -685,6 +686,7 @@ def page_dataset(S, sheet):
                 jm.submit("import", f"Import into {name}", ["-m", "sdxlr.data", "--dest", DATASETS / name, *srcs], gpu=False)
                 staged.clear()
                 staged_l.text = ""
+                pick.set_options(sorted({*_datasets(), name}), value=name)
                 S["ds_pick"] = name
                 ui.notify("Importing. Progress is in the sidebar")
 
@@ -746,8 +748,8 @@ def page_dataset(S, sheet):
                         .style("line-height:1.3; height:34px; overflow:hidden")
 
     def tick():
-        if pick.options != _datasets():
-            pick.set_options(_datasets(), value=S["ds_pick"] if S["ds_pick"] in _datasets() else None)
+        if not set(_datasets()) <= set(pick.options):
+            pick.set_options(sorted({*_datasets(), *pick.options}), value=S["ds_pick"])
         imgs = _images(S["ds_pick"])
         if seen["sig"] != (S["ds_pick"], len(imgs), sum(p.with_suffix(".txt").exists() for p in imgs)):
             draw()
@@ -1128,7 +1130,8 @@ def root():
     ui.colors(primary="#9AA3AE")
     code = app.storage.browser.get("code")
     if not session.valid(code) or session.load(code) is None:
-        code = session.new_code()
+        # a new link (the tunnel URL changes each launch) has no cookie: one user, so continue the latest session
+        code = session.latest() or session.new_code()
         app.storage.browser["code"] = code
     S = state_for(code)
 

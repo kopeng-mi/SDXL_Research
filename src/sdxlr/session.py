@@ -33,6 +33,12 @@ def new_code() -> str:
     return code
 
 
+def latest() -> str | None:
+    """Most recently saved session code on this VM."""
+    files = sorted(DIR.glob("*.json"), key=lambda p: p.stat().st_mtime) if DIR.exists() else []
+    return files[-1].stem if files else None
+
+
 def load(code: str) -> dict | None:
     p = _path(code) if valid(code) else None
     if not p or not p.exists():
