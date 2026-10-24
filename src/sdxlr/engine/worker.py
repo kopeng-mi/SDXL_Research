@@ -302,8 +302,22 @@ def _op_upscale(eng, args, status, step, check):
             "size": list(big.size)}
 
 
+def _op_hog(eng, args, status, step, check):
+    """Test only (SDXLR_DEBUG_OPS=1): eat RAM until the RAM guard kills this worker (tools/t4_check.py)."""
+    hold, mb = [], int(args.get("step_mb", 256))
+    for i in range(int(args.get("max_gb", 40)) * 1024 // mb):
+        check()
+        hold.append(bytearray(mb * 2**20))  # bytearray zero-fills: the pages are really committed
+        if i % 4 == 0:
+            status(f"holding {(i + 1) * mb / 1024:.1f} GB")
+        time.sleep(float(args.get("pause", 0.15)))
+    return {"held_gb": len(hold) * mb / 1024}
+
+
 OPS = {"status": _op_status, "unload": _op_unload, "load": _op_load,
        "generate": _op_generate, "upscale": _op_upscale}
+if os.environ.get("SDXLR_DEBUG_OPS"):
+    OPS["hog"] = _op_hog
 
 
 def main(conn, cancel_event, parent_pid: int) -> None:
