@@ -155,9 +155,11 @@ def _op_generate(eng, args, status, step, check):
     check()
     images, seed, info = eng.generate(job)
     check()
-    meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
+    t1 = time.time()
+    meta = {**(args.get("meta") or {}), "seconds": round(t1 - t0, 1)}
     paths = save_images(images, meta, seed)
-    return {"paths": paths, "seed": seed, "info": info, "size": list(images[0].size)}
+    return {"paths": paths, "seed": seed, "info": info + f" | saved {time.time() - t1:.1f}s",
+            "size": list(images[0].size)}
 
 
 def _op_upscale(eng, args, status, step, check):
@@ -165,9 +167,11 @@ def _op_upscale(eng, args, status, step, check):
     job = _job_from(eng, args["job"], step)
     check()
     big, seed, info = eng.upscale(job, float(args.get("scale", 2.0)), on_tile=step)
-    meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
+    t1 = time.time()
+    meta = {**(args.get("meta") or {}), "seconds": round(t1 - t0, 1)}
     paths = save_images([big], meta, seed)
-    return {"paths": paths, "seed": seed, "info": info, "size": list(big.size)}
+    return {"paths": paths, "seed": seed, "info": info + f" | saved {time.time() - t1:.1f}s",
+            "size": list(big.size)}
 
 
 OPS = {"status": _op_status, "unload": _op_unload, "load": _op_load,

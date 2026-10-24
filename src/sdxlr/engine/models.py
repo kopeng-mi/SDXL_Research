@@ -269,13 +269,16 @@ class Engine:
             return self._img2img(image=img.resize((w, h)), width=w, height=h, strength=job.strength, **common).images
         return self.pipe(width=job.width, height=job.height, **common).images
 
-    def _run(self, job: Job, seed: int) -> list[Image.Image]:
+    def _run(self, job: Job, seed: int, tim: dict | None = None) -> list[Image.Image]:
         if self.kind == "zimage":
             return self._run_zimage(job, seed)
         lora_key = tuple(sorted((p, round(w, 4)) for p, w in job.loras if p and w))
         self.set_loras(job.loras)
         self._set_sampler(job.sampler)
+        t0 = time.time()
         emb = self._encode(job, lora_key)
+        if tim is not None:
+            tim["enc"] = time.time() - t0  # Z-Image encodes inside the pipeline; this stays 0 there
         rep = {k: v.repeat(job.count, *[1] * (v.dim() - 1)) for k, v in emb.items()}
         gen = [torch.Generator("cpu").manual_seed(seed + i) for i in range(job.count)]
         common = dict(num_inference_steps=job.steps, guidance_scale=job.cfg, generator=gen, **rep, **_step_cb(job))
@@ -301,15 +304,36 @@ class Engine:
             raise RuntimeError("no model loaded")
         seed = job.seed if job.seed >= 0 else int(torch.randint(0, 2**31 - 1, (1,)))
         t = time.time()
+        tim = {"enc": 0.0, "first": None, "last": None}
+        orig_step = job.on_step
+
+        def timed_step(done: int, total: int) -> None:
+            now = time.time()
+            if tim["first"] is None:
+                tim["first"] = now
+            tim["last"] = now
+            if orig_step:
+                orig_step(done, total)
+
+        job.on_step = timed_step
         try:
-            images = self._run(job, seed)
+            images = self._run(job, seed, tim)
         except torch.OutOfMemoryError:
             self._embeds.clear()
             gc.collect()
             torch.cuda.empty_cache()
             self.pipe.vae.enable_tiling()
-            images = self._run(job, seed)  # a second OOM propagates to the caller
-        info = f"{time.time() - t:.1f}s | seed {seed} | {vram()} | {ram()}"
+            tim.update(enc=0.0, first=None, last=None)  # the timings of the failed try are meaningless
+            images = self._run(job, seed, tim)  # a second OOM propagates to the caller
+        total = time.time() - t
+        parts = []
+        if tim["enc"] > 0.05:
+            parts.append(f"encode {tim['enc']:.1f}s")
+        if tim["last"]:
+            parts.append(f"denoise {tim['last'] - tim['first']:.1f}s")
+            parts.append(f"decode {max(total - (tim['last'] - t), 0):.1f}s")  # past the last step: decode + copy
+        stages = f" ({' · '.join(parts)})" if parts else ""
+        info = f"{total:.1f}s{stages} | seed {seed} | {vram()} | {ram()}"
         torch.cuda.empty_cache()  # give back the activations' memory between images
         return images, seed, info
 
