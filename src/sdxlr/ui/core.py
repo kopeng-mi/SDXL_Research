@@ -134,6 +134,7 @@ def shred(kinds: list[str]) -> float:
         if k == "cache":
             shutil.rmtree(HF_CACHE / "hub", ignore_errors=True)
             shutil.rmtree(HF_CACHE / "xet", ignore_errors=True)
+    files.forget_thumbs()
     poke()
     log.info(f"deleted from the VM: {', '.join(kinds)}")
     return sum(sizes[k] for k in kinds)

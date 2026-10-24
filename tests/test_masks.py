@@ -68,6 +68,23 @@ def test_oversize() -> None:
     assert post("1234", png((masks.MAX_SIDE + 1, 8))).status_code == 422
 
 
+def test_huge_png_is_refused_before_decoding() -> None:
+    data = png((9000, 9000))  # a few KB of PNG that would decode to 81 MB (built before load is watched)
+    calls = []
+    orig = Image.Image.load
+    Image.Image.load = lambda self, *a, **k: (calls.append(1), orig(self, *a, **k))[1]  # noqa: E731
+    try:
+        r = post("1234", data)
+    finally:
+        Image.Image.load = orig
+    assert r.status_code == 422 and not calls, (r.status_code, calls)
+
+
+def test_bad_content_length_is_400() -> None:
+    r = client.post("/api/mask/1234", content=png(), headers={"content-length": "abc"})
+    assert r.status_code in (400, 422), r.status_code  # never a 500
+
+
 def test_path_for_accepts_only_our_ids() -> None:
     for bad in ("../../etc/passwd", "1234-../x", "1234-" + "g" * 32, "1234-abc", "12345-" + "a" * 32, "", None,
                 "1234-" + "a" * 32 + "/../x"):

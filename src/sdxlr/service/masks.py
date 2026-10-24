@@ -56,12 +56,12 @@ def store(code: str, data: bytes) -> str:
     if not data.startswith(PNG_MAGIC):
         raise MaskError(415, "the mask must be a PNG")
     try:
-        img = Image.open(io.BytesIO(data))
+        img = Image.open(io.BytesIO(data))  # reads the header only
+        if max(img.size) > MAX_SIDE or min(img.size) < 1:  # before load(): a huge PNG is never decoded
+            raise MaskError(422, f"the mask must be at most {MAX_SIDE} px per side")
         img.load()
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise MaskError(415, "the mask is not a readable PNG") from None
-    if max(img.size) > MAX_SIDE or min(img.size) < 1:
-        raise MaskError(422, f"the mask must be at most {MAX_SIDE} px per side")
     # a painter canvas may arrive as RGB(A): its alpha carries the paint when it has any, else the brightness
     if img.mode in ("RGBA", "LA"):
         a = img.getchannel("A")
@@ -91,7 +91,11 @@ def register(app) -> None:
     async def mask_upload(code: str, request: Request):
         if not session.valid(code):
             raise HTTPException(404, "unknown session")
-        if int(request.headers.get("content-length") or 0) > MAX_BYTES:
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            raise HTTPException(400, "bad content-length") from None
+        if declared > MAX_BYTES:
             raise HTTPException(413, "the mask is too big")
         buf = bytearray()
         async for chunk in request.stream():  # stop reading at the cap, never hold more than MAX_BYTES

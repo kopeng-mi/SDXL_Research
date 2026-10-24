@@ -176,6 +176,11 @@ def thumb(p: Path, size: int = 320) -> str:
     return url(p) if Path(p).relative_to(WORK).parts[0] in SERVED else PLACEHOLDER
 
 
+def forget_thumbs() -> None:
+    """The thumbs folder was emptied (Delete from VM): drop what we remembered about it."""
+    _ready.clear()
+
+
 def display_ready(p) -> bool:
     """True once the display copy exists (a memory check, safe in a timer)."""
     return (str(p), DISPLAY) in _ready
@@ -250,6 +255,8 @@ def _refresh(force: bool = False) -> None:
         _make_missing(pending)
         return
     _sig[0], _sig[1] = sig, now
+    for key in [k for k in _ready if not _thumb_path(Path(k[0]), k[1]).exists()]:  # thumbs deleted behind our back
+        _ready.discard(key)
     his = history.items(220)
     loras, models, zimage = list_loras(), list_models(), list_zimage()
     ds = {}

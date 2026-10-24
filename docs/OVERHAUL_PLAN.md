@@ -11,7 +11,7 @@ For the agents who implement this. Read `docs/HANDOVER.md` first (state, testing
   - Public repo: no personal data. Tokens (HF_TOKEN, CIVITAI_TOKEN, TS_AUTHKEY) come from Colab Secrets only, never files or commits. `dataset_test/` photos never leave this PC except to a test VM.
   - Free Colab T4: stop every VM when done.
   - Verify before saying done: run tests, the fake-engine UI, or the T4 run, and report failures as they are.
-- Tools named in HANDOVER (`colab` CLI, `wsf` web search) are installed on this PC; check `--help` before use. For browser checks use Z Code's built-in browser. Where this plan says "Haiku user tests", read it as "subagent UI tests, ask the user first".
+- Tools named in HANDOVER (`colab` CLI, `wsf` web search) are installed on this PC; check `--help` before use. For browser checks use the `agent-browser` skill. Where this plan says "Haiku user tests", read it as "subagent UI tests, ask the user first".
 - Library facts below were checked against the pinned versions; recheck anything not listed against the pinned source (`diffusers==0.40.0`, `nicegui==3.18.0`, `transformers==5.17.0`) before relying on memory.
 
 ## Decisions (user, final)
