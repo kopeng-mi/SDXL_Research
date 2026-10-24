@@ -13,7 +13,9 @@ import json
 import random
 from pathlib import Path
 
-DIR = Path("/content/work/sessions")
+from .paths import SESS
+
+DIR = SESS
 
 
 def _path(code: str) -> Path:

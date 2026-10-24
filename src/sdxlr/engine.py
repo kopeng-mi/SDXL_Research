@@ -31,33 +31,10 @@ from typing import Callable
 import torch
 from PIL import Image
 
+from .paths import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, z_key
 from .prompt import encode_sdxl
 
 MAX_ADAPTERS = 12
-FP16_VAE = "madebyollin/sdxl-vae-fp16-fix"
-
-# Z-Image choices (any org/repo/file, URL or path also works)
-Z_REPO = "Tongyi-MAI/Z-Image-Turbo"  # tokenizer, VAE, scheduler, configs
-Z_MODELS = {
-    "turbo Q8": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q8_0.gguf",  # 7.2 GB, best quality
-    "turbo Q6": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q6_K.gguf",  # 5.9 GB
-    "turbo Q5": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q5_K_M.gguf",  # 5.6 GB
-    "turbo Q4": "unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q4_K_M.gguf",  # 5.0 GB
-}
-Z_ENCODERS = {
-    "official": "Tongyi-MAI/Z-Image-Turbo:text_encoder",
-    "abliterated": "BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1",  # fewer refusals in prompt following
-}
-
-SAMPLERS = {
-    "dpmpp_2m_karras": ("DPMSolverMultistepScheduler", {"algorithm_type": "dpmsolver++", "use_karras_sigmas": True}),
-    "dpmpp_2m_sde_karras": ("DPMSolverMultistepScheduler", {"algorithm_type": "sde-dpmsolver++", "use_karras_sigmas": True}),
-    "dpmpp_sde_karras": ("DPMSolverSinglestepScheduler", {"use_karras_sigmas": True}),
-    "euler_a": ("EulerAncestralDiscreteScheduler", {}),
-    "euler": ("EulerDiscreteScheduler", {}),
-    "euler_trailing": ("EulerDiscreteScheduler", {"timestep_spacing": "trailing"}),  # Lightning / few-step
-    "lcm": ("LCMScheduler", {}),
-}
 
 
 @dataclass
@@ -179,7 +156,7 @@ class Engine:
         text_encoder: 'org/repo' or 'org/repo:subfolder'
         te_quant:     nf4 (~2.5 GB) | int8 (~4.4 GB) | fp16 (~8 GB, may not fit next to Q8)
         """
-        key = f"zimage|{transformer}|{text_encoder}|{te_quant}"
+        key = z_key(transformer, text_encoder, te_quant)
         if self.pipe is not None and self.model_path == key:
             return "already loaded"
         from diffusers import GGUFQuantizationConfig, ZImagePipeline, ZImageTransformer2DModel

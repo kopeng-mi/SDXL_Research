@@ -31,17 +31,13 @@ from PIL import Image, ImageDraw, PngImagePlugin
 from .. import history, resources, session
 from ..activity import LOGS, act, log
 from ..engine import SAMPLERS, Z_ENCODERS, Z_MODELS, Engine, Job  # noqa: F401  (SAMPLERS used by pages)
-from ..fetch import LORAS, MODELS, WORK, fetch, list_loras, list_models, list_zimage
+from ..fetch import fetch, list_loras, list_models, list_zimage
 from ..jobs import JobManager, fmt_secs
 from ..modes import ASPECTS, MODES, PONY_NEG, PONY_TAGS, STYLES, train_eta
+from ..paths import DATASETS, LORAS, MODELS, OUTPUTS, SDXL_BASE, THUMBS, UPLOADS, WORK
 
-DATASETS = WORK / "datasets"
-OUTPUTS = WORK / "outputs"
-UPLOADS = WORK / "uploads"
-THUMBS = WORK / "thumbs"
 IMG = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 NEG_SDXL = "(worst quality:1.3), (low quality:1.2), lowres, bad anatomy, bad hands, watermark, blur, cartoon, anime, drawing"
-SDXL_BASE = "stabilityai/stable-diffusion-xl-base-1.0/sd_xl_base_1.0.safetensors"
 
 eng = Engine()
 gpu_lock = threading.Lock()

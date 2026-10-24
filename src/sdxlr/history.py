@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image
 
-OUTPUTS = Path("/content/work/outputs")
+from .paths import OUTPUTS
 
 
 def save(png: Path, meta: dict) -> None:

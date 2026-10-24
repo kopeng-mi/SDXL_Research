@@ -24,11 +24,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-WORK = Path("/content/work")
-MODELS = WORK / "models"
-LORAS = WORK / "loras"
-ZIMAGE = MODELS / "zimage_custom"  # user Z-Image checkpoints (built-in ones go to models/zimage)
-WEIGHTS = {".safetensors", ".gguf", ".ckpt"}
+from .paths import LORAS, MODELS, WEIGHTS, WORK, ZIMAGE
 
 
 def _hf_link(src: str) -> tuple[str, str, str] | None:
@@ -91,7 +87,7 @@ def fetch_loras(src: str) -> list[Path]:
 def prefetch_zimage(transformer: str, text_encoder: str) -> None:
     from huggingface_hub import snapshot_download
 
-    from .engine import Z_REPO
+    from .paths import Z_REPO
     print(f"model file: {fetch(transformer, MODELS / 'zimage')}", flush=True)
     repo, _, sub = text_encoder.partition(":")
     snapshot_download(repo, allow_patterns=[f"{sub}/*"] if sub else None)
@@ -104,7 +100,7 @@ def prefetch_zimage(transformer: str, text_encoder: str) -> None:
 def prefetch_sdxl() -> None:
     from huggingface_hub import snapshot_download
 
-    from .engine import FP16_VAE
+    from .paths import FP16_VAE
     snapshot_download(FP16_VAE)
     print("fp16 VAE ready", flush=True)
 

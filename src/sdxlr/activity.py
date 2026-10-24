@@ -22,7 +22,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-LOGS = Path("/content/work/logs")
+from .paths import LOGS
+
 LOG_EVERY = 5.0
 log = logging.getLogger("sdxlr")
 
