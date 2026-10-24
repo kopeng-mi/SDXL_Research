@@ -20,8 +20,8 @@ import gradio as gr
 import numpy as np
 from PIL import Image, PngImagePlugin
 
-from . import presets, settings
-from .engine import SAMPLERS, Z_ENCODERS, Z_MODELS, Engine, Job, ram, vram
+from . import presets, resources, session, settings
+from .engine import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, Engine, Job, ram, vram
 from .fetch import LORAS, MODELS, WORK, ZIMAGE, add_file, fetch_loras, list_loras, list_models, list_zimage
 from .jobs import JobManager, fmt_secs
 from .modes import ASPECTS, MODES, PONY_NEG, PONY_TAGS, STYLES, train_eta
@@ -106,6 +106,7 @@ def _jobs_table():
 def load_model(kind, sdxl_model, vae, z_model, z_te, z_quant):
     if jm.gpu_busy():
         raise gr.Error("A GPU job is running (see Jobs). Load the model after it finishes.")
+    old = _loaded_name()
     with gpu_lock:
         try:
             if kind == "Z-Image":
@@ -118,8 +119,29 @@ def load_model(kind, sdxl_model, vae, z_model, z_te, z_quant):
             raise
         except Exception as e:
             raise gr.Error(f"Load failed: {type(e).__name__}: {e}")
+    if old and old != _loaded_name():
+        msg = f"Unloaded {old} to make room. " + msg
     gr.Info(msg)
     return _header()
+
+
+def _loaded_name():
+    if eng.kind == "zimage":
+        return Path(eng.model_path.split("|")[1]).name
+    return Path(eng.model_path).name if eng.kind == "sdxl" else None
+
+
+def load_preview(kind, sdxl_model, z_model, z_quant):
+    """Hatched block in the VRAM bar for a picked model that is not loaded yet."""
+    if kind == "Z-Image":
+        zp = _z_path(z_model)
+        if eng.kind == "zimage" and f"|{zp}|" in (eng.model_path or "") and eng.model_path.endswith(f"|{z_quant}"):
+            return None
+        return resources.estimate(kind, None, str(MODELS / "zimage" / Path(zp).name) if zp in Z_MODELS.values() else zp,
+                                  z_quant)
+    if not sdxl_model or (eng.kind == "sdxl" and eng.model_path == _model_path(sdxl_model)):
+        return None
+    return resources.estimate(kind, _model_path(sdxl_model), None, z_quant)
 
 
 def ensure_loaded(kind, sdxl_model, vae, z_model, z_te, z_quant):
@@ -194,6 +216,12 @@ def generate(mode, prompt, negative, style, aspect, count, seed, steps, cfg, sam
         im.save(p, pnginfo=png)
         paths.append(str(p))
     return paths, info, _header()
+
+
+def generate_s(code, *args):
+    out = generate(*args)
+    session.update(code, gallery=out[0])
+    return out
 
 
 PRESET_FIELDS = ["mode", "prompt", "negative", "style", "aspect", "count", "seed", "steps", "cfg", "sampler", "clip_skip"]
@@ -388,6 +416,12 @@ def lib_delete(name):
     raise gr.Error(f"Not found: {name}")
 
 
+def clear_cache():
+    keep = [eng.model_path or "", Z_REPO, FP16_VAE]
+    gb = resources.clear_download_cache(keep)
+    gr.Info(f"Freed {gb:.1f} GB of download cache (re-downloaded when needed)")
+
+
 def save_settings(sync_repo, datasets_repo):
     settings.set(sync_repo=sync_repo, datasets_repo=datasets_repo)
     gr.Info("Settings saved")
@@ -425,7 +459,7 @@ THEME = gr.themes.Soft(primary_hue="indigo", neutral_hue="slate", radius_size="l
     block_label_background_fill="transparent", block_label_background_fill_dark="transparent",
     block_title_text_weight="500",
 )
-CSS = """
+CSS = resources.CSS + """
 .gradio-container {max-width: 1400px !important; margin: auto;}
 #header {padding: 8px 14px; border-radius: 12px; background: var(--block-background-fill);}
 #gen-btn {min-height: 56px; font-size: 1.05rem;}
@@ -435,7 +469,16 @@ footer {display: none !important;}
 
 def build() -> gr.Blocks:
     with gr.Blocks(title="SDXL_Research") as ui:
-        header = gr.Markdown(_header(), elem_id="header")
+        code = gr.State("")
+        code_store = gr.BrowserState("", storage_key="sdxlr_session")
+        with gr.Group(elem_id="header"):
+            with gr.Row(equal_height=True):
+                header = gr.Markdown(_header(), scale=5)
+                code_md = gr.Markdown("", scale=1, min_width=120)
+                code_in = gr.Textbox(placeholder="code", show_label=False, max_length=4, scale=0, min_width=80,
+                                     container=False)
+                code_go = gr.Button("Resume", size="sm", scale=0, min_width=80)
+            res = gr.HTML(resources.bars(eng, jm))
 
         with gr.Tabs():
             # ===== Generate =====
@@ -515,7 +558,7 @@ def build() -> gr.Blocks:
                 gen_inputs = [mode, prompt, negative, style, aspect, count, seed, steps, cfg, sampler, clip_skip,
                               use_adv, inpaint_on, editor, strength, *lora_inputs]
                 go.click(ensure_loaded, [kind, sdxl_model, vae, z_model, z_te, z_quant], header).success(
-                    generate, gen_inputs, [gallery, gen_info, header])
+                    generate_s, [code, *gen_inputs], [gallery, gen_info, header])
                 preset_vals = [mode, prompt, negative, style, aspect, count, seed, steps, cfg, sampler, clip_skip]
                 p_save.click(save_preset, [preset_name, kind, *preset_vals, *lora_inputs], preset_pick)
                 p_load.click(load_preset, preset_pick, [kind, *preset_vals, *lora_inputs])
@@ -669,9 +712,11 @@ def build() -> gr.Blocks:
                         with gr.Row():
                             l_del_name = gr.Textbox(label="File name to delete", scale=3)
                             l_del = gr.Button("Delete", variant="stop", size="sm", scale=1)
+                        l_clear = gr.Button("Clear download cache", size="sm")
                 l_go.click(lib_download, [l_link, l_kind])
                 l_refresh.click(lib_table, None, l_table)
                 l_del.click(lib_delete, l_del_name, l_table)
+                l_clear.click(clear_cache)
                 s_save.click(save_settings, [s_sync, s_ds])
                 s_push.click(lambda: sync("push"), None, preset_pick)
                 s_pull.click(lambda: sync("pull"), None, preset_pick)
@@ -700,7 +745,7 @@ def build() -> gr.Blocks:
         l_up.upload(lib_upload, [l_up, l_kind], [l_table, l_up]).then(refresh_lists, None, list_outs)
         seen_done: set[str] = set()
 
-        def tick(jid, ds):
+        def tick(jid, ds, k, sm, zm, zq):
             # refresh whatever a just-finished job changed
             new = [j for j in jm.jobs.values() if j.status in ("done", "failed") and j.id not in seen_done]
             seen_done.update(j.id for j in new)
@@ -708,14 +753,58 @@ def build() -> gr.Blocks:
             keep = gr.update()
             ds_view = show_dataset(ds)[:2] if kinds & {"import", "caption"} else (keep, keep)
             lists = refresh_lists() if kinds & {"download", "train", "import", "upload"} else [keep] * len(list_outs)
-            return (_header(), _jobs_table(), job_log(jid), *ds_view, *lists)
+            return (_header(), resources.bars(eng, jm, load_preview(k, sm, zm, zq)), _jobs_table(), job_log(jid),
+                    *ds_view, *lists)
 
         timer = gr.Timer(2.0)
-        timer.tick(tick, [job_id, ds_pick],
-                   [header, jobs_df, job_out, ds_gallery, ds_info, *list_outs],
+        timer.tick(tick, [job_id, ds_pick, kind, sdxl_model, z_model, z_quant],
+                   [header, res, jobs_df, job_out, ds_gallery, ds_info, *list_outs],
                    concurrency_limit=None, show_progress="hidden")  # never waits behind a generation
 
         ui.load(refresh_lists, None, list_outs)
+
+        # ----- session code: restore on reconnect, save every few seconds -----
+        persist = {"kind": kind, "sdxl_model": sdxl_model, "vae": vae, "z_model": z_model, "z_te": z_te,
+                   "z_quant": z_quant, "mode": mode, "prompt": prompt, "negative": negative, "style": style,
+                   "aspect": aspect, "count": count, "seed": seed, "steps": steps, "cfg": cfg, "sampler": sampler,
+                   "clip_skip": clip_skip, "use_adv": use_adv, "strength": strength,
+                   **{f"lora{i}": c for i, c in enumerate(lora_inputs)},
+                   "ds_name": ds_name, "ds_pick": ds_pick, "cap_model": cap_model, "cap_trigger": cap_trigger,
+                   "cap_class": cap_class, "t_kind": t_kind, "t_ds": t_ds, "t_name": t_name, "t_base": t_base,
+                   "t_epochs": t_epochs, "t_repeats": t_repeats, "t_batch": t_batch, "t_res": t_res, "t_dim": t_dim,
+                   "t_lr": t_lr, "t_te_lr": t_te_lr, "t_type": t_type, "t_hf": t_hf, "t_resume": t_resume,
+                   "c_kind": c_kind, "c_base": c_base, "c_z": c_z, "c_loras": c_loras, "c_combos": c_combos,
+                   "c_str": c_str, "c_prompt": c_prompt, "c_name": c_name, "job_id": job_id}
+        keys, comps = list(persist), list(persist.values())
+
+        def restore(want, stored):
+            c = want if session.valid(want) else stored
+            d = session.load(c) if session.valid(c) else None
+            if d is None:
+                if session.valid(want):
+                    gr.Warning(f"No session {want} on this VM")
+                    return [gr.update()] * (4 + len(comps) + 1)
+                c, d = session.new_code(), {}
+            elif d:
+                gr.Info(f"Session {c} restored")
+            vals = [d[k] if k in d else gr.update() for k in keys]
+            gal = d.get("gallery")
+            return [c, c, f"Session **{c}**", "", *vals, gal if gal else gr.update()]
+
+        r_out = [code, code_store, code_md, code_in, *comps, gallery]
+        ui.load(restore, [code_in, code_store], r_out)
+        code_go.click(restore, [code_in, code_store], r_out)
+
+        def autosave(c, *vals):
+            if not session.valid(c):
+                return
+            *vals, gal = vals
+            d = dict(zip(keys, vals))
+            d["gallery"] = [g[0] if isinstance(g, (list, tuple)) else (g.get("image") or {}).get("path") if isinstance(g, dict) else g
+                              for g in (gal or [])]
+            session.save(c, d)
+
+        gr.Timer(5.0).tick(autosave, [code, *comps, gallery], None, concurrency_limit=None, show_progress="hidden")
         # dropdowns start on their first choice without firing .change: fill dependents once
         ui.load(show_dataset, ds_pick, ds_out)
         ui.load(train_estimate, eta_in, t_eta)
