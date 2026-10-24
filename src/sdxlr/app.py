@@ -122,6 +122,15 @@ def load_model(kind, sdxl_model, vae, z_model, z_te, z_quant):
     return _header()
 
 
+def ensure_loaded(kind, sdxl_model, vae, z_model, z_te, z_quant):
+    """Generate without pressing Load: load the picked model first (the first Z-Image load downloads ~12 GB)."""
+    want = "zimage" if kind == "Z-Image" else "sdxl"
+    if eng.pipe is not None and eng.kind == want:
+        return _header()
+    gr.Info("Loading the model first…")
+    return load_model(kind, sdxl_model, vae, z_model, z_te, z_quant)
+
+
 def unload_model():
     with gpu_lock:
         eng.unload()
@@ -141,7 +150,7 @@ def _mask(ed):
 def generate(mode, prompt, negative, style, aspect, count, seed, steps, cfg, sampler, clip_skip,
              use_adv, inpaint_on, editor, strength, *lora_args):
     if eng.pipe is None:
-        raise gr.Error("Load a model first (top of this tab).")
+        raise gr.Error("No model loaded (top of this tab).")
     if not gpu_lock.acquire(blocking=False):
         raise gr.Error("The GPU is busy with a job (see Jobs). Try again when it finishes.")
     try:
@@ -436,13 +445,17 @@ def build() -> gr.Blocks:
                     sdxl_model = gr.Dropdown(_model_names(), label="SDXL checkpoint", visible=False, scale=3)
                     vae = gr.Radio(["fp16fix", "model"], value="fp16fix", label="VAE", visible=False, scale=1)
                     z_model = gr.Dropdown(_z_names(), value="turbo Q8", allow_custom_value=True, label="Z-Image model", scale=2)
-                    z_te = gr.Dropdown(list(Z_ENCODERS), value="official", allow_custom_value=True, label="Text encoder", scale=2)
-                    z_quant = gr.Radio(["nf4", "int8"], value="nf4", label="Encoder size", scale=1)
                     with gr.Column(scale=1, min_width=110):
                         load_b = gr.Button("Load", variant="primary", size="sm")
                         unload_b = gr.Button("Unload", size="sm")
-                kind.change(lambda k: [gr.update(visible=k == "SDXL")] * 2 + [gr.update(visible=k == "Z-Image")] * 3,
-                            kind, [sdxl_model, vae, z_model, z_te, z_quant])
+                with gr.Accordion("Text encoder (Z-Image)", open=False) as z_opts:
+                    with gr.Row():
+                        z_te = gr.Dropdown(list(Z_ENCODERS), value="official", allow_custom_value=True, label="Text encoder",
+                                           info="abliterated = fewer refusals; or any org/repo[:subfolder]")
+                        z_quant = gr.Radio(["nf4", "int8"], value="nf4", label="Encoder size",
+                                           info="nf4 = smaller · int8 = a bit better, +2 GB")
+                kind.change(lambda k: [gr.update(visible=k == "SDXL")] * 2 + [gr.update(visible=k == "Z-Image")] * 2,
+                            kind, [sdxl_model, vae, z_model, z_opts])
 
                 with gr.Row():
                     with gr.Column(scale=5):
@@ -501,7 +514,8 @@ def build() -> gr.Blocks:
                 unload_b.click(unload_model, None, header)
                 gen_inputs = [mode, prompt, negative, style, aspect, count, seed, steps, cfg, sampler, clip_skip,
                               use_adv, inpaint_on, editor, strength, *lora_inputs]
-                go.click(generate, gen_inputs, [gallery, gen_info, header])
+                go.click(ensure_loaded, [kind, sdxl_model, vae, z_model, z_te, z_quant], header).success(
+                    generate, gen_inputs, [gallery, gen_info, header])
                 preset_vals = [mode, prompt, negative, style, aspect, count, seed, steps, cfg, sampler, clip_skip]
                 p_save.click(save_preset, [preset_name, kind, *preset_vals, *lora_inputs], preset_pick)
                 p_load.click(load_preset, preset_pick, [kind, *preset_vals, *lora_inputs])
@@ -523,11 +537,12 @@ def build() -> gr.Blocks:
                         with gr.Row():
                             cap_trigger = gr.Textbox("ohwx_person", label="Trigger word")
                             cap_class = gr.Textbox("woman", label="Class word")
-                        cap_prompt = gr.Textbox(label="Custom instruction (blank = identity preset; {cls} = class word)", lines=2)
-                        with gr.Row():
-                            cap_preview = gr.Number(0, label="Only first N (0 = all)", precision=0)
-                            cap_over = gr.Checkbox(False, label="Overwrite existing")
-                        cap_go = gr.Button("Caption")
+                        with gr.Accordion("Advanced", open=False):
+                            cap_prompt = gr.Textbox(label="Custom instruction (blank = identity preset; {cls} = class word)", lines=2)
+                            with gr.Row():
+                                cap_preview = gr.Number(0, label="Only first N (0 = all)", precision=0)
+                                cap_over = gr.Checkbox(False, label="Overwrite existing")
+                        cap_go = gr.Button("Caption", variant="primary")
                     with gr.Column(scale=3):
                         with gr.Row():
                             ds_pick = gr.Dropdown(_datasets(), label="Dataset", scale=4)
@@ -562,15 +577,16 @@ def build() -> gr.Blocks:
                         with gr.Row():
                             t_epochs = gr.Number(15, label="Epochs", precision=0)
                             t_repeats = gr.Number(6, label="Repeats", precision=0)
-                            t_batch = gr.Number(3, label="Batch (SDXL)", precision=0)
-                            t_res = gr.Dropdown([512, 768], value=512, label="Resolution (Z-Image)")
+                            t_batch = gr.Number(3, label="Batch", precision=0)
+                            t_res = gr.Dropdown([512, 768], value=512, label="Resolution", visible=False,
+                                                info="768 is untested on T4")
                         t_eta = gr.Markdown("Pick a dataset to see the time estimate.")
                         with gr.Accordion("Advanced", open=False):
                             with gr.Row():
                                 t_dim = gr.Number(24, label="Rank (dim)", precision=0)
                                 t_lr = gr.Number(2e-4, label="Learning rate")
-                                t_te_lr = gr.Number(2e-5, label="Text encoder LR (SDXL, 0 = off)")
-                                t_type = gr.Radio(["LoRA", "LoCon"], value="LoRA", label="Type (SDXL)")
+                                t_te_lr = gr.Number(2e-5, label="Text encoder LR (0 = off)")
+                                t_type = gr.Radio(["LoRA", "LoCon"], value="LoRA", label="Type")
                             with gr.Row():
                                 t_hf = gr.Textbox(label="Private HF repo for LoRAs + resume state", placeholder="yourname/my-loras")
                                 t_resume = gr.Checkbox(False, label="Resume from that repo")
@@ -582,8 +598,9 @@ def build() -> gr.Blocks:
                                     "- A LoRA is saved every epoch: compare them in Compare\n"
                                     "- Progress and logs: Jobs (bottom)")
                 t_kind.change(lambda k: (gr.update(value=10 if k == "Z-Image" else 15), gr.update(value=4 if k == "Z-Image" else 6),
-                                         gr.update(value=16 if k == "Z-Image" else 24), gr.update(value=1e-4 if k == "Z-Image" else 2e-4)),
-                              t_kind, [t_epochs, t_repeats, t_dim, t_lr])
+                                         gr.update(value=16 if k == "Z-Image" else 24), gr.update(value=1e-4 if k == "Z-Image" else 2e-4),
+                                         *[gr.update(visible=k == "SDXL")] * 4, gr.update(visible=k == "Z-Image")),
+                              t_kind, [t_epochs, t_repeats, t_dim, t_lr, t_base, t_batch, t_te_lr, t_type, t_res])
                 eta_in = [t_kind, t_ds, t_repeats, t_epochs, t_batch, t_res]
                 for c in eta_in:
                     c.change(train_estimate, eta_in, t_eta)
@@ -597,26 +614,28 @@ def build() -> gr.Blocks:
                     with gr.Column(scale=2):
                         c_kind = gr.Radio(["SDXL", "Z-Image"], value="SDXL", label="Model type")
                         c_base = gr.Dropdown(_model_names(), label="SDXL checkpoint")
-                        c_z = gr.Dropdown(_z_names(), value="turbo Q8", allow_custom_value=True, label="Z-Image model")
+                        c_z = gr.Dropdown(_z_names(), value="turbo Q8", allow_custom_value=True, label="Z-Image model", visible=False)
                         c_loras = gr.CheckboxGroup([p.name for p in list_loras()], label="LoRAs (one row each)")
                         c_combos = gr.Textbox(label="…or mixes, comma-separated",
                                               placeholder="face_a.safetensors:0.44+face_b.safetensors:0.44")
                         c_str = gr.Textbox("0.6 0.8 1.0", label="Strengths (columns)")
                         c_prompt = gr.Textbox("ohwx_person, woman, portrait photo, natural light", label="Prompt", lines=2)
-                        c_neg = gr.Textbox(NEG_SDXL, label="Negative (SDXL)", lines=1)
-                        with gr.Row():
-                            c_steps = gr.Number(20, label="Steps", precision=0)
-                            c_cfg = gr.Number(5, label="CFG")
-                            c_seed = gr.Number(42, label="Seed", precision=0)
                         c_name = gr.Textbox("grid1", label="Grid name")
+                        with gr.Accordion("Advanced", open=False):
+                            c_neg = gr.Textbox(NEG_SDXL, label="Negative (SDXL)", lines=1)
+                            with gr.Row():
+                                c_steps = gr.Number(20, label="Steps", precision=0)
+                                c_cfg = gr.Number(5, label="CFG")
+                                c_seed = gr.Number(42, label="Seed", precision=0)
                         with gr.Row():
                             c_refresh = gr.Button("↻ LoRAs", size="sm")
                             c_go = gr.Button("Run compare", variant="primary")
                     with gr.Column(scale=3):
                         c_show = gr.Button("Show grid", size="sm")
                         c_img = gr.Image(type="filepath", show_label=False, height=720)
-                c_kind.change(lambda k: (gr.update(value=9 if k == "Z-Image" else 20), gr.update(value=0 if k == "Z-Image" else 5)),
-                              c_kind, [c_steps, c_cfg])
+                c_kind.change(lambda k: (gr.update(value=9 if k == "Z-Image" else 20), gr.update(value=0 if k == "Z-Image" else 5),
+                                         gr.update(visible=k == "SDXL"), gr.update(visible=k == "Z-Image")),
+                              c_kind, [c_steps, c_cfg, c_base, c_z])
                 c_refresh.click(lambda: gr.update(choices=[p.name for p in list_loras()]), None, c_loras)
                 c_go.click(run_compare, [c_kind, c_base, c_z, c_loras, c_combos, c_str, c_prompt, c_neg,
                                          c_steps, c_cfg, c_seed, c_name])
@@ -633,15 +652,15 @@ def build() -> gr.Blocks:
                         l_go = gr.Button("Download", variant="primary")
                         l_up = gr.File(label="…or upload files (.safetensors, .gguf, zip of LoRAs)", file_count="multiple",
                                        file_types=[".safetensors", ".gguf", ".ckpt", ".zip"])
-                        gr.Markdown("#### Sync (private HF repo)")
-                        st = settings.get()
-                        s_sync = gr.Textbox(st["sync_repo"], label="Sync repo for presets + LoRAs", placeholder="yourname/sdxlr-sync")
-                        s_ds = gr.Textbox(st["datasets_repo"], label="Datasets repo (optional)")
-                        s_save = gr.Button("Save settings", size="sm")
-                        with gr.Row():
-                            s_push = gr.Button("Push ↑")
-                            s_pull = gr.Button("Pull ↓")
-                        gr.Markdown("<small>HF token: Colab Secrets → HF_TOKEN. Civitai: CIVITAI_TOKEN.</small>")
+                        with gr.Accordion("Sync with a private HF repo", open=False):
+                            st = settings.get()
+                            s_sync = gr.Textbox(st["sync_repo"], label="Sync repo for presets + LoRAs", placeholder="yourname/sdxlr-sync")
+                            s_ds = gr.Textbox(st["datasets_repo"], label="Datasets repo (optional)")
+                            s_save = gr.Button("Save settings", size="sm")
+                            with gr.Row():
+                                s_push = gr.Button("Push ↑")
+                                s_pull = gr.Button("Pull ↓")
+                        gr.Markdown("<small>Private HF files and Civitai need tokens in Colab Secrets: HF_TOKEN, CIVITAI_TOKEN.</small>")
                     with gr.Column(scale=3):
                         l_refresh = gr.Button("Refresh", size="sm")
                         l_table = gr.Dataframe(lib_table(), headers=["type", "file", "size"], interactive=False)
