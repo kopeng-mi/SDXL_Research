@@ -4,7 +4,8 @@
 #
 # 1. **Runtime > Change runtime type > T4 GPU**
 # 2. **Secrets** (key icon, left): add `HF_TOKEN` (needed for private repos and sync);
-#    optional `CIVITAI_TOKEN` for Civitai downloads. Allow notebook access.
+#    optional `CIVITAI_TOKEN` for Civitai downloads, optional `TS_AUTHKEY` (Tailscale, reusable +
+#    ephemeral key) for a fixed private address http://sdxlr:7860. Allow notebook access.
 # 3. Run **Setup** (installs everything; re-runs skip finished steps), then **Launch**.
 # %%
 #@title Setup: repo + venv (idempotent)

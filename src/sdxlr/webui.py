@@ -1,6 +1,9 @@
 """SDXL_Research UI (NiceGUI). Runs inside the main venv.
 
-  python -m sdxlr.webui [--port 7860] [--tunnel cloudflare|none] [--sync]
+  python -m sdxlr.webui [--port 7860] [--access auto|tailscale|cloudflare|none] [--sync]
+
+Access: tailscale = fixed private address (needs TS_AUTHKEY), cloudflare = public
+trycloudflare.com link that changes each launch; auto = tailscale when the key is set.
 
 Layout: a sidebar (pages + live status: model, memory, current task, session
 code) and one page at a time. Model loading and generation run in this process
@@ -1235,7 +1238,7 @@ def root():
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7860)
-    ap.add_argument("--tunnel", choices=["cloudflare", "none"], default="cloudflare")
+    ap.add_argument("--access", choices=["auto", "tailscale", "cloudflare", "none"], default="auto")
     ap.add_argument("--sync", action="store_true", help="pull presets + LoRAs from the sync repo at start")
     a = ap.parse_args()
     setup_logging()
@@ -1251,14 +1254,30 @@ def main() -> None:
     secret_f = WORK / ".ui_secret"
     if not secret_f.exists():
         secret_f.write_text(secrets.token_hex(16))
-    if a.tunnel == "cloudflare":
+    access = a.access
+    if access == "auto":
+        import os
+        access = "tailscale" if os.environ.get("TS_AUTHKEY") else "cloudflare"
+
+    def announce(u):
+        log.info("=" * 60)
+        log.info(f"Open the app: {u}")
+        log.info("=" * 60)
+
+    if access == "tailscale":
+        from . import tailnet
+
+        def ts_up():
+            try:
+                announce(tailnet.up(a.port) + "  (on a device signed in to your Tailscale)")
+            except Exception as e:
+                log.info(f"Tailscale failed ({e}); falling back to a Cloudflare link")
+                from . import tunnel
+                tunnel.start(a.port, announce)
+
+        app.on_startup(lambda: threading.Thread(target=ts_up, daemon=True).start())
+    elif access == "cloudflare":
         from . import tunnel
-
-        def announce(u):
-            log.info("=" * 60)
-            log.info(f"Open the app: {u}")
-            log.info("=" * 60)
-
         app.on_startup(lambda: tunnel.start(a.port, announce))
     log.info(f"app starting on port {a.port}")
     ui.run(root, host="0.0.0.0", port=a.port, title="SDXL Research", show=False, reload=False, dark=True,

@@ -57,7 +57,7 @@ def run(args: list[str], cwd: str | Path = REPO, progress_every: float = 5.0) ->
         raise SystemExit(f"failed with exit code {proc.returncode}")
 
 
-SECRETS = ("HF_TOKEN", "CIVITAI_TOKEN")
+SECRETS = ("HF_TOKEN", "CIVITAI_TOKEN", "TS_AUTHKEY")
 
 
 def load_secrets() -> dict[str, bool]:
