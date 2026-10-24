@@ -49,7 +49,7 @@ def fetch(src: str, dst_dir: Path) -> Path:
         raise RuntimeError(f"The download failed (curl exit {e.returncode}): {src}. Check the link and retry.") from None
     except Exception as e:  # huggingface_hub errors are OSErrors too: match them by name first
         name = type(e).__name__
-        if getattr(e, "errno", None) == 28:  # ENOSPC
+        if getattr(e, "errno", None) == 28 or "No space left on device" in str(e):  # ENOSPC (hf xet wraps it)
             raise RuntimeError("The download stopped: the disk is full. Free disk space in Library, then retry.") from None
         if name in ("GatedRepoError",):
             raise RuntimeError("This Hugging Face model is gated: accept its terms on the model page, add HF_TOKEN in "
