@@ -22,7 +22,7 @@ from pathlib import Path
 import toml
 import yaml
 
-from . import hfsync
+from . import hfsync, loraformat
 from .fetch import MODELS, fetch
 
 REPO = Path(__file__).resolve().parents[2]
@@ -129,6 +129,8 @@ def main() -> None:
     ap.add_argument("--model", help="override preset model: org/repo/file, URL or path")
     ap.add_argument("--hf-repo", help="private HF repo for LoRAs + resume state")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--trigger", default="", help="trigger word, saved next to each LoRA")
+    ap.add_argument("--class-word", default="", help="class word, saved next to each LoRA")
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE")
     a = ap.parse_args()
 
@@ -170,6 +172,9 @@ def main() -> None:
     rc = subprocess.run(cmd, cwd=KOHYA, env={**os.environ, "PYTHONUNBUFFERED": "1"}).returncode
     if pusher:
         pusher.finish()
+    steps = -(-len(imgs) * int(c["repeats"]) * int(c["epochs"]) // max(1, int(c["batch_size"])))
+    loraformat.write_sidecars(out, trigger=a.trigger, class_word=a.class_word, dataset=a.images.name, base=str(c["model"]),
+                              steps=steps, kind="sdxl")  # the UI reads these first
     print(f"LoRAs in {out}: {sorted(p.name for p in out.glob('*.safetensors'))}", flush=True)
     sys.exit(rc)
 

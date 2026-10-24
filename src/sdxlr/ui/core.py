@@ -215,6 +215,7 @@ def submit_train(S):
                 f"batch_size={int(S['t_batch'])}", f"network_dim={int(S['t_dim'])}",
                 f"network_alpha={max(1, int(S['t_dim']) * 2 // 3)}", f"unet_lr={S['t_lr']}",
                 f"text_encoder_lr={S['t_te_lr']}", f"lora_type={S['t_type']}"]
+    args += ["--trigger", S["cap_trigger"], "--class-word", S["cap_class"]]  # saved next to the LoRA
     if S["t_hf"].strip():
         args += ["--hf-repo", S["t_hf"].strip()]
     if S["t_resume"]:

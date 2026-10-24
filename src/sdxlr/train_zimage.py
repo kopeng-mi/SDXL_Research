@@ -20,6 +20,7 @@ run is named NAME_rDONE and its files are renumbered to the real epoch.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -29,7 +30,7 @@ from pathlib import Path
 import toml
 import yaml
 
-from . import hfsync
+from . import hfsync, loraformat
 from .fetch import MODELS, WORK, fetch
 
 REPO = Path(__file__).resolve().parents[2]
@@ -68,6 +69,8 @@ def main() -> None:
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE")
     ap.add_argument("--hf-repo", help="private HF repo for LoRAs + resume state")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--trigger", default="", help="trigger word, saved next to each LoRA")
+    ap.add_argument("--class-word", default="", help="class word, saved next to each LoRA")
     a = ap.parse_args()
     if a.resume and not a.hf_repo:
         sys.exit("--resume needs --hf-repo")
@@ -150,6 +153,12 @@ def main() -> None:
         dst = lora.with_name(f"{lora.stem}_diffusers.safetensors")
         if not dst.exists():
             _run("convert_lora.py", "--input", str(lora), "--output", str(dst), "--target", "other")
+    n_imgs = len([p for p in a.images.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}])
+    steps = -(-n_imgs * int(c["repeats"]) * int(c["epochs"]) // max(1, int(c["batch_size"])))
+    for lora in out.glob("*.safetensors"):  # the diffusers files are what the app loads
+        loraformat.sidecar_path(lora).write_text(json.dumps({k: v for k, v in dict(
+            trigger=a.trigger, class_word=a.class_word, dataset=a.images.name, base="Z-Image Base", steps=steps,
+            kind="zimage").items() if v}, indent=1), encoding="utf-8")
     print(f"LoRAs in {out}: {sorted(p.name for p in out.glob('*_diffusers.safetensors'))}", flush=True)
     if pusher:
         pusher.finish()
