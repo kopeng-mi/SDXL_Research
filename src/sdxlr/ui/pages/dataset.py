@@ -50,8 +50,10 @@ def page(S):
                     staged.clear()
                     staged_l.text = ""
                     S["ds_link"] = ""
-                    S["ds_pick"] = S["ds_name"].strip()
-                    pick.set_options(sorted({*datasets(), S["ds_pick"]}), value=S["ds_pick"])
+                    name = S["ds_name"].strip()
+                    # options first, then the value (via the select): a bound value missing from a select's options
+                    # bounced between the select and the state until NiceGUI hit its recursion limit
+                    pick.set_options(sorted({*datasets(), name}), value=name)
                     imp_line.track(job)
 
                 main_button("Import", do_import)

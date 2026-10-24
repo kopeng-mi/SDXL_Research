@@ -12,6 +12,9 @@ from ..core import err, reuse, thumb, url
 from ..theme import button, title
 
 
+PAGE = 150  # tiles per "Show more"
+
+
 def page(S):
     with ui.row().classes("w-full items-center gap-4"):
         title("History")
@@ -22,14 +25,19 @@ def page(S):
                 missing = reuse(S, history.read(await e.file.read(), e.file.name))
                 ui.notify("Settings loaded into Generate", type="positive")
                 if missing:
-                    ui.notify(f"Missing LoRAs (add them in Library): {', '.join(missing)}", type="warning")
+                    ui.notify(f"Missing models or LoRAs (add them in Library): {', '.join(missing)}", type="warning")
                 ui.navigate.to("/")
             except Exception as ex:
                 ui.notify(err(ex), type="negative")
 
         ui.upload(label="Load settings from a .json or a PNG made here", auto_upload=True, on_upload=up) \
             .props("flat bordered accept=.json,.png hide-upload-btn").classes("drop").style("width:360px")
+    view = {"n": PAGE, "q": ""}
+    with ui.row().classes("w-full items-center gap-3 pt-2"):
+        ui.input(placeholder="Search prompts and file names").props("outlined dense clearable").style("width:360px")             .on_value_change(lambda e: (view.update(q=(e.value or "").strip().lower(), n=PAGE), draw()))
+        count_l = ui.label().classes("t-small muted")
     grid = ui.row().classes("w-full gap-3 pt-2")
+    more_b = button("Show more", lambda: (view.update(n=view["n"] + PAGE), draw()), icon="expand_more")
 
     def show(p: Path, m: dict):
         with ui.dialog() as d, ui.card().classes("panel").style("width:960px; max-width:95vw"):
@@ -78,18 +86,31 @@ def page(S):
         d.close()
         ui.notify("Settings loaded. Press Generate to make it again (same seed, same image)", type="positive")
         if missing:
-            ui.notify(f"Missing LoRAs (add them in Library): {', '.join(missing)}", type="warning")
+            ui.notify(f"Missing models or LoRAs (add them in Library): {', '.join(missing)}", type="warning")
         ui.navigate.to("/")
 
     seen = {"top": "x"}
 
+    def matching():
+        items = files.items(files.HISTORY_MAX)  # the cached index: no disk access
+        q = view["q"]
+        if not q:
+            return items
+        return [(p, m) for p, m in items
+                if q in (m.get("prompt_raw") or m.get("prompt") or "").lower() or q in p.name.lower()
+                or q in (m.get("name") or "").lower()]
+
     def draw():
-        items = files.items(150)
-        seen["top"] = items[0][0].name if items else None
+        found = matching()
+        items = found[:view["n"]]
+        seen["top"] = files.items(1)[0][0].name if files.items(1) else None
+        count_l.text = (f"{len(items)} of {len(found)}" + (f" matching \"{view['q']}\"" if view["q"] else " images"))             if found else ""
+        more_b.set_visibility(len(found) > len(items))
         grid.clear()
         with grid:
             if not items:
-                ui.label("Images you generate show up here, with the settings to make them again.").classes("muted")
+                ui.label("No image matches that search." if view["q"] else
+                         "Images you generate show up here, with the settings to make them again.").classes("muted")
             for p, m in items:
                 with ui.column().classes("tile gap-1"):
                     ui.image(thumb(p)).props("no-transition no-spinner").on("click", lambda p=p, m=m: show(p, m))

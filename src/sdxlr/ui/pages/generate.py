@@ -136,7 +136,7 @@ def page(S):
             with preset_menu:
                 names = presets.list_presets()
                 for n in names:
-                    ui.menu_item(f"Load preset: {n}", on_click=lambda n=n: (S.update(presets.load(n)), draw_loras(),
+                    ui.menu_item(f"Load preset: {n}", on_click=lambda n=n: (safe_update(S, presets.load(n)), draw_loras(),
                                                                            ui.notify(f"Preset {n} loaded")))
                 if names:
                     ui.separator()
@@ -337,7 +337,7 @@ def page(S):
         banner = ui.column().classes("banner w-full gap-2")
         with banner:
             tool_l = ui.label().classes("t-small")
-            seg({"area": "Painted part", "whole": "Whole image", "extend": "Extend", "upscale": "Upscale"}, S, "tool",
+            seg({"area": "Change a part", "whole": "Change all", "extend": "Extend", "upscale": "Upscale"}, S, "tool",
                 on_change=lambda e: on_mode())
             # painted part: tools, then sliders
             with ui.row().classes("w-full items-center gap-2") as area_tools:
@@ -413,7 +413,7 @@ def page(S):
                            "detail": ui.label().classes("hint tnum")}
             ov.set_visibility(False)
             overlay["preview"].set_visibility(False)
-        with ui.row().classes("w-full items-center gap-2") as result_bar:
+        with ui.row().classes("w-full items-center gap-2 banner") as result_bar:
             ui.label("Keep this result?").classes("t-small")
             button("Keep", lambda: keep(), icon="check")
             button("Try again", lambda: try_again(), icon="refresh")
@@ -442,7 +442,7 @@ def page(S):
                 .props("accept=image/*,.heic,.heif hide-upload-btn").style("display:none")
             up_btn = button("Upload", lambda: up.run_method("pickFiles"), icon="upload").tooltip("Upload a photo to edit")
         with ui.row().classes("w-full items-center gap-2") as actions:
-            reuse_b = button("Reuse", lambda: reuse_shown(), icon="settings_backup_restore").tooltip("Fill the form with the settings of this image")
+            reuse_b = button("Make it again", lambda: reuse_shown(), icon="settings_backup_restore").tooltip("Fill the form with the settings of this image")
             area_b = button("Change a part", lambda: set_tool("area"), icon="brush")
             whole_b = button("Change all", lambda: set_tool("whole"), icon="auto_fix_high").tooltip("Change the whole image with your prompt")
             extend_b = button("Extend", lambda: set_tool("extend"), icon="aspect_ratio")
@@ -454,6 +454,8 @@ def page(S):
         recent = ui.row().classes("w-full gap-2")
         up_btn.move(toolbar)
         actions.move(toolbar)
+        # the review bar sits right above the image: under a tall portrait it was below the fold
+        result_bar.move(right, target_index=right.default_slot.children.index(canvas))
         actions.classes(remove="w-full", add="grow")
 
     def reviewing() -> bool:
@@ -553,7 +555,7 @@ def page(S):
 
     def on_done(paths, tool):
         files.poke()
-        if not tool or tool == "upscale":
+        if not tool:  # upscale results are reviewed too: the user sees the result, not the source
             pending["result"] = None
             return
         try:
@@ -588,6 +590,8 @@ def page(S):
         if reviewing():
             S["src"] = S["image"]
             pending["result"] = None
+        if S["tool"] in PROMPT_HINT:
+            ui.notify(PROMPT_HINT[S["tool"]], type="info", position="top")
         draw_canvas()
 
     auto = {"strength": None}  # the strength last set automatically; anything else is the user's choice
@@ -601,10 +605,16 @@ def page(S):
         if S["tool"] == "area":
             area_default()
 
+    PROMPT_HINT = {"area": "Now write in the prompt what the painted part should show (e.g. \"a red shirt\").",
+                   "whole": "The prompt describes the whole new image; change it to steer the result.",
+                   "extend": "The prompt describes the whole scene, including the new edges."}
+
     def set_tool(tool):
         if tool and not S["image"]:
             ui.notify("Generate, pick or upload an image first", type="warning")
             return
+        if tool in PROMPT_HINT and tool != S["tool"]:
+            ui.notify(PROMPT_HINT[tool], type="info", position="top")  # the prompt carries over from the last image
         S.update(tool=tool, src=S["image"] if tool else None)
         pending["result"] = None
         draw_canvas()
@@ -621,7 +631,7 @@ def page(S):
             ui.notify("Settings filled in from this image. The seed is now fixed, so it makes the same image",
                       type="positive")
             if missing:
-                ui.notify(f"Missing LoRAs (add them in Library): {', '.join(missing)}", type="warning")
+                ui.notify(f"Missing models or LoRAs (add them in Library): {', '.join(missing)}", type="warning")
 
     def tick():
         if S["tool"] and not S["src"]:

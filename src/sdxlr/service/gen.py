@@ -259,17 +259,37 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
     return r["paths"], r["info"], r["seed"]
 
 
+def safe_update(S, d: dict) -> list[str]:
+    """S.update(d) for saved settings (presets): select-backed fields only take values their select offers
+    (an unknown one would bounce in the binding). Returns the models it could not set."""
+    from ..paths import SAMPLERS, Z_ENCODERS
+    from .files import model_names, z_names
+    kind = d.get("kind") if d.get("kind") in ("Z-Image", "SDXL") else S["kind"]
+    allowed = {"kind": ("Z-Image", "SDXL"), "style": modes.STYLES, "aspect": modes.ASPECTS, "sampler": SAMPLERS,
+               "mode": modes.MODES["zimage" if kind == "Z-Image" else "sdxl"], "sdxl_model": model_names(),
+               "z_model": z_names(), "z_te": Z_ENCODERS, "vae": ("fp16fix", "model"), "z_quant": ("nf4", "int8")}
+    missing = []
+    for k, v in d.items():
+        if k not in S or v is None:
+            continue
+        if k in allowed and v not in allowed[k]:
+            if k in ("sdxl_model", "z_model"):
+                missing.append(str(v))
+            continue
+        S[k] = v
+    return missing
+
+
 def reuse(S, meta: dict) -> list[str]:
-    """Fill the form from a history JSON so the same image can be made again; returns missing LoRAs."""
+    """Fill the form from a history JSON so the same image can be made again; returns missing models and LoRAs."""
     from .files import lora_names
-    for k in ("negative", "style", "mode", "steps", "cfg", "sampler", "clip_skip", "aspect", "seed", "kind",
-              "sdxl_model", "vae", "z_model", "z_te", "z_quant", "strength"):
-        if k in meta and meta[k] is not None:
-            S[k] = meta[k]
+    keys = ("negative", "style", "mode", "steps", "cfg", "sampler", "clip_skip", "aspect", "seed", "kind",
+            "sdxl_model", "vae", "z_model", "z_te", "z_quant", "strength")
+    missing = safe_update(S, {k: meta[k] for k in keys if k in meta})
     S["prompt"] = meta.get("prompt_raw", meta.get("prompt", ""))
     if "negative_raw" in meta:
         S["negative"] = meta["negative_raw"]
     S["loras"] = [list(x) for x in meta.get("loras", [])]
     S["use_adv"] = True  # same steps/cfg/sampler as recorded
     S["count"], S["tool"] = 1, None
-    return [n for n, _ in S["loras"] if n not in lora_names()]
+    return missing + [n for n, _ in S["loras"] if n not in lora_names()]
