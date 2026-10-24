@@ -14,7 +14,6 @@ from __future__ import annotations
 import html
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
