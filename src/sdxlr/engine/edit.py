@@ -38,6 +38,12 @@ def load_source(path: str | Path) -> Image.Image:
         img.seek(0)
     from PIL import ImageOps
     img = ImageOps.exif_transpose(img)
+    if img.mode in ("I;16", "I;16L", "I;16B", "I", "F"):  # 16-bit grayscale: scale to 8 bit (convert would clip to white)
+        a = np.asarray(img, dtype=np.float64)
+        top = 65535.0 if a.max() > 255 else 255.0
+        img = Image.fromarray(np.clip(a / top * 255.0 + 0.5, 0, 255).astype(np.uint8), "L")
+    if img.mode == "P" and "transparency" in img.info or img.mode in ("LA", "PA"):
+        img = img.convert("RGBA")
     if img.mode == "RGBA":
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[3])

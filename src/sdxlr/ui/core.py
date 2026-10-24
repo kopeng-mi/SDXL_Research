@@ -75,17 +75,27 @@ def save_upload(data: bytes, name: str) -> str:
     """An uploaded photo joins the outputs (and History) as a PNG, so the tools can work on it.
     The original file is never touched; generation works on a capped copy in the worker."""
     import io
+
+    from PIL import UnidentifiedImageError
+
+    from ..engine.edit import load_source
     if len(data) > MAX_UPLOAD:
         raise ValueError(f"{name} is {len(data) / 2**20:.0f} MB; the limit is 50 MB. Export it smaller first.")
-    from PIL import ImageOps
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
+    try:
+        img = load_source(io.BytesIO(data))
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError):
+        raise ValueError(f"{name} is not an image this app can read (JPEG, PNG, WebP). HEIC: export as JPEG first.") from None
     if min(img.size) < 256:
         raise ValueError(f"{name} is too small ({img.size[0]}x{img.size[1]} px); use one at least 256 px.")
     day = OUTPUTS / time.strftime("%Y-%m-%d")
     day.mkdir(parents=True, exist_ok=True)
     stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in Path(name).stem)[:40] or "image"
     p = day / f"{time.strftime('%H%M%S')}_upload_{stem}.png"
-    img.convert("RGB").save(p)
+    k = 1
+    while p.exists():  # same second and name
+        k += 1
+        p = day / f"{time.strftime('%H%M%S')}_upload_{stem}_{k}.png"
+    img.save(p)
     history.save(p, {"uploaded": True, "name": name, "prompt_raw": "", "made": time.strftime("%Y-%m-%d %H:%M:%S"),
                      "size": list(img.size)})
     poke()

@@ -11,7 +11,7 @@ from nicegui import run, ui
 from ... import presets
 from ...activity import Cancelled, act
 from ...service import files
-from ..core import (ASPECTS, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, engc,
+from ..core import (ASPECTS, MAX_UPLOAD, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, engc,
                     err, generate_blocking, is_loaded, load_blocking, lora_names, model_names, picked_label, reuse,
                     save_upload, task_is_loading, thumb, url, z_names)
 from ..theme import button, labeled, main_button, seg
@@ -276,7 +276,7 @@ def page(S):
 
             async def on_upload(e):
                 try:
-                    p = save_upload(await e.file.read(), e.file.name)
+                    p = await run.io_bound(save_upload, await e.file.read(), e.file.name)  # decoding a big photo must not block the page
                 except ValueError as ex:
                     ui.notify(str(ex), type="warning")
                     return
@@ -287,7 +287,8 @@ def page(S):
                 draw_canvas()
                 ui.notify("Image added. Pick what to do with it below", type="positive")
 
-            up = ui.upload(auto_upload=True, on_upload=on_upload, max_files=1) \
+            up = ui.upload(auto_upload=True, on_upload=on_upload, max_files=1, max_file_size=MAX_UPLOAD,
+                           on_rejected=lambda: ui.notify("That file is over 50 MB. Export it smaller first.", type="warning")) \
                 .props("accept=image/* hide-upload-btn").style("display:none")
             button("Upload an image", lambda: up.run_method("pickFiles"), icon="upload")
         with ui.row().classes("w-full items-center gap-2") as actions:

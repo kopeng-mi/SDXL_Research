@@ -9,18 +9,26 @@ and job outputs show up within a refresh even if nobody clicks.
 
 from __future__ import annotations
 
+import os
 import threading
+import time
 from pathlib import Path
 
 from .. import history
 from ..fetch import list_loras, list_models, list_zimage
-from ..paths import DATASETS, THUMBS, WORK, Z_MODELS
+from ..paths import DATASETS, LORAS, MODELS, OUTPUTS, RUNS, THUMBS, WORK, Z_MODELS, ZIMAGE
 
 IMG = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 REFRESH_SECS = 2.5
+FULL_RESCAN_SECS = 20.0  # rescan even when no directory changed (files edited in place)
+SERVED = ("outputs", "thumbs", "compare")  # the only dirs under WORK the browser can fetch
+PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
 
 _lock = threading.Lock()
 _wake = threading.Event()
+_poked = threading.Event()
+_want: set[tuple[str, int]] = set()  # thumbs asked for before they existed: made by the refresh thread
+_sig: list = [None, 0.0]  # directory signature and time of the last full scan
 _started = threading.Event()
 _cache: dict = {"history": [], "prompts": [], "loras": [], "models": [], "zimage": [], "datasets": []}
 
@@ -131,28 +139,81 @@ def url(p) -> str:
     return f"/work/{Path(p).relative_to(WORK).as_posix()}?v={int(Path(p).stat().st_mtime)}"
 
 
+def _thumb_path(p: Path, size: int) -> Path:
+    return THUMBS / Path(p).relative_to(WORK).with_suffix(f".{size}.jpg")
+
+
 def thumb(p: Path, size: int = 320) -> str:
-    t = THUMBS / Path(p).relative_to(WORK).with_suffix(f".{size}.jpg")
-    if not t.exists() or t.stat().st_mtime < Path(p).stat().st_mtime:
-        _make_thumb(Path(p), t, size)
-    return url(t)
+    """URL of a thumbnail. Never decodes an image here (this runs on the event loop): a missing
+    thumb is queued for the refresh thread and the original shows until it is made."""
+    t = _thumb_path(p, size)
+    try:
+        if t.stat().st_mtime >= Path(p).stat().st_mtime:
+            return url(t)
+    except OSError:
+        pass
+    with _lock:
+        _want.add((str(p), size))
+    _wake.set()
+    return url(p) if Path(p).relative_to(WORK).parts[0] in SERVED else PLACEHOLDER
 
 
 def _make_thumb(p: Path, t: Path, size: int) -> None:
     from PIL import Image
     t.parent.mkdir(parents=True, exist_ok=True)
-    im = Image.open(p).convert("RGB")
+    im = Image.open(p)
+    im.draft("RGB", (size * 2, size * 2))  # JPEGs decode at a fraction of the size
+    im = im.convert("RGB")
     im.thumbnail((size, size))
-    im.save(t, quality=85)
+    part = t.with_name(t.name + ".part")  # the browser never sees a half-written thumb
+    im.save(part, "JPEG", quality=85)
+    os.replace(part, t)
+
+
+def _make_missing(pairs) -> None:
+    for p, size in pairs:
+        try:
+            t = _thumb_path(p, size)
+            if not t.exists() or t.stat().st_mtime < Path(p).stat().st_mtime:
+                _make_thumb(Path(p), t, size)
+        except Exception:
+            pass  # half-written or vanished file; the next pass retries
 
 
 # ---- refresh ----
 def poke() -> None:
-    """Something changed on disk: refresh at once instead of waiting."""
+    """Something changed on disk: rescan at once instead of waiting."""
+    _poked.set()
     _wake.set()
 
 
-def _refresh() -> None:
+def _mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _signature() -> tuple:
+    """Directory mtimes that change when a file is added or removed (one stat each, no listing of files)."""
+    dirs = [OUTPUTS, LORAS, RUNS, MODELS, MODELS / "zimage", ZIMAGE, DATASETS]
+    try:
+        dirs += sorted((d for d in OUTPUTS.iterdir() if d.is_dir()), reverse=True)[:3]  # the newest day folders
+        dirs += [d for d in RUNS.iterdir() if d.is_dir()] + [d for d in DATASETS.iterdir() if d.is_dir()]
+    except OSError:
+        pass
+    return tuple((str(d), _mtime(d)) for d in dirs)
+
+
+def _refresh(force: bool = False) -> None:
+    sig, now = _signature(), time.time()
+    if not force and sig == _sig[0] and now - _sig[1] < FULL_RESCAN_SECS:
+        with _lock:
+            pending = list(_want)
+            _want.clear()
+        _make_missing(pending)
+        return
+    _sig[0], _sig[1] = sig, now
     his = history.items(220)
     loras, models, zimage = list_loras(), list_models(), list_zimage()
     ds = {}
@@ -183,20 +244,18 @@ def _refresh() -> None:
     with _lock:
         _cache.update(history=his, prompts=prompts, loras=loras, models=models, zimage=zimage,
                       datasets=sorted(ds), ds=ds, caps=caps, cap_text=cap_text)
-    for p, _ in his[:30]:  # thumbs for the recent strip and History, made off the event loop
-        try:
-            for size in (160, 320):
-                t = THUMBS / Path(p).relative_to(WORK).with_suffix(f".{size}.jpg")
-                if not t.exists() or t.stat().st_mtime < Path(p).stat().st_mtime:
-                    _make_thumb(Path(p), t, size)
-        except Exception:
-            pass
+        pending = list(_want)
+        _want.clear()
+    # thumbs for every listed image, newest first, made here and not on the event loop
+    _make_missing(pending + [(p, size) for p, _ in his for size in (160, 320)]
+                  + [(p, 320) for imgs in ds.values() for p in imgs])
 
 
 def _refresh_loop() -> None:
     while True:
         try:
-            _refresh()
+            _refresh(force=_poked.is_set())
+            _poked.clear()
         except Exception:
             pass  # a half-written file or a vanishing dir; the next pass re-reads
         _wake.wait(REFRESH_SECS)

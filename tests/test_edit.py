@@ -42,6 +42,22 @@ def test_load_source() -> None:
     assert edit.load_source(b3).getpixel((4, 4)) == (255, 0, 0)
 
 
+def test_load_source_16bit_and_palette() -> None:
+    # 16-bit grayscale PNG: mid gray stays mid gray (convert("RGB") alone would clip to white)
+    b = io.BytesIO()
+    Image.fromarray(np.full((8, 8), 32768, dtype=np.uint16)).save(b, "PNG")
+    b.seek(0)
+    px = edit.load_source(b).getpixel((4, 4))
+    assert 126 <= px[0] <= 129 and px[0] == px[1] == px[2], px
+    # palette PNG with a transparent index: composited on white
+    p = Image.new("P", (8, 8), 0)
+    p.putpalette([255, 0, 0] + [0, 0, 0] * 255)
+    b2 = io.BytesIO()
+    p.save(b2, "PNG", transparency=0)
+    b2.seek(0)
+    assert edit.load_source(b2).getpixel((4, 4)) == (255, 255, 255)
+
+
 def test_mask_ops() -> None:
     m = Image.new("L", (100, 100), 0)
     from PIL import ImageDraw
