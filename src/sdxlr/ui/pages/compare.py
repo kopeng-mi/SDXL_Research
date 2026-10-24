@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from nicegui import ui
+from pathlib import Path
+
+from nicegui import run, ui
 
 from ...service import files
-from ..core import WORK, err, lora_names, model_names, submit_compare, url, z_names
-from ..theme import JobLine, labeled, main_button, seg, title
+from ..core import WORK, err, lora_names, model_names, submit_compare, thumb, url, z_names
+from ..theme import JobLine, button, labeled, main_button, seg, title
 
 
 def page(S):
@@ -54,15 +56,45 @@ def page(S):
 
     seen = {"m": "x"}
 
-    def tick():
+    def cells_of(name: str) -> list[tuple[str, str]]:
+        """[(label, png)] of a grid's single images, from its state file (runs in a thread)."""
+        import json
+        f = WORK / "compare" / name / "state.json"
+        try:
+            cells = json.loads(f.read_text(encoding="utf-8")).get("cells", {})
+        except (OSError, ValueError):
+            return []
+        return [(k.replace("|", " @ "), v) for k, v in cells.items() if Path(v).exists()]
+
+    def zoom(src: str) -> None:
+        with ui.dialog().props("maximized") as d, ui.card().classes("w-full h-full").style("background:#111"):
+            with ui.row().classes("w-full items-center"):
+                ui.label("Grid at full size (scroll to move around)").classes("t-small muted")
+                ui.space()
+                button("Close", d.close, icon="close")
+            with ui.element("div").style("overflow:auto; width:100%; height:calc(100% - 48px)"):
+                ui.image(src).props("no-transition no-spinner fit=none").style("width:auto; max-width:none")
+        d.open()
+
+    async def tick():
         name = S["c_name"].strip() or "grid"
         m = files.grid_mtime(name)
         if m != seen["m"]:
             seen["m"] = m
+            cells = await run.io_bound(cells_of, name) if m else []
             box.clear()
             with box:
                 if m:
-                    ui.image(url(WORK / "compare" / name / "grid.png")).classes("w-full").props("fit=contain no-transition no-spinner")
+                    src = url(WORK / "compare" / name / "grid.png")
+                    ui.image(src).classes("w-full").props("fit=contain no-transition no-spinner")                         .style("cursor:zoom-in").on("click", lambda src=src: zoom(src)).tooltip("Click to see it at full size")
+                    if cells:
+                        with ui.expansion(f"Single images ({len(cells)})").classes("w-full"):
+                            ui.label("Click one to download it.").classes("hint")
+                            with ui.row().classes("w-full gap-2"):
+                                for label, png in cells:
+                                    with ui.column().classes("gap-0 items-center"):
+                                        ui.image(thumb(Path(png), 160)).props("no-transition no-spinner").classes("thumb")                                             .style("cursor:pointer").on("click", lambda png=png: ui.download.file(png))
+                                        ui.label(label[:40]).classes("t-small muted")
                 else:
                     with ui.column().classes("items-center gap-1"):
                         ui.label(f"No grid named \"{S['c_name']}\" yet").classes("muted")
