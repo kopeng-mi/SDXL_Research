@@ -147,13 +147,50 @@ def caption(ds: str, name: str) -> str:
         return _cache.get("cap_text", {}).get(f"{ds}/{name}", "")
 
 
-def files_on_vm() -> list[tuple[str, Path]]:
-    """Everything in the Library listing: (kind, path), cached."""
+CACHE_LABELS = {  # what the app downloads by itself into the Hugging Face cache, in plain words
+    "Tongyi-MAI/Z-Image-Turbo": "Z-Image prompt reader, VAE, configs",
+    "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": "Z-Image model (4-bit)",
+    "BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1": "Z-Image prompt reader (uncensored)",
+    "Qwen/Qwen3-VL-4B-Instruct": "Captioner (Qwen3-VL)",
+    "SmilingWolf/wd-eva02-large-tagger-v3": "Captioner (WD tags)",
+    "madebyollin/taef1": "Live preview decoder",
+    "madebyollin/taesdxl": "Live preview decoder",
+    "madebyollin/sdxl-vae-fp16-fix": "SDXL VAE",
+}
+
+
+def files_on_vm() -> list[dict]:
+    """Everything in the Library listing, cached: {kind, name, path, bytes, cache_repo (HF cache entries only)}."""
     _ensure()
     with _lock:
-        return ([("SDXL checkpoint", p) for p in _cache["models"]]
-                + [("Z-Image model", p) for p in _cache["zimage"]]
-                + [("LoRA", p) for p in _cache["loras"]])
+        return list(_cache.get("vm", []))
+
+
+def _vm_inventory(models, zimage, loras) -> list[dict]:
+    """Models, LoRAs and the downloads the app made by itself (built-in Z-Image files, ControlNets, training bases,
+    HF cache repos), with sizes. Runs in the refresh thread."""
+    from ..paths import MODELS
+
+    def entry(kind, p):
+        try:
+            return {"kind": kind, "name": p.name, "path": p, "bytes": p.stat().st_size, "cache_repo": None}
+        except OSError:
+            return None
+
+    out = [entry("SDXL checkpoint", p) for p in models] + [entry("Z-Image model", p) for p in zimage]
+    for sub, kind in (("zimage", "Z-Image model (built-in)"), ("zimage_cn", "ControlNet"),
+                      ("zimage_train", "Training base model")):
+        d = MODELS / sub
+        out += [entry(kind, p) for p in sorted(d.glob("*")) if p.is_file()] if d.exists() else []
+    out += [entry("LoRA", p) for p in loras]
+    try:
+        from huggingface_hub import scan_cache_dir
+        for repo in sorted(scan_cache_dir().repos, key=lambda r: -r.size_on_disk):
+            out.append({"kind": CACHE_LABELS.get(repo.repo_id, "Download cache"), "name": repo.repo_id,
+                        "path": Path(repo.repo_path), "bytes": repo.size_on_disk, "cache_repo": repo.repo_id})
+    except Exception:
+        pass  # no cache yet
+    return [e for e in out if e]
 
 
 def url(p) -> str:
@@ -284,6 +321,7 @@ def _refresh(force: bool = False) -> None:
         _ready.discard(key)  # thumbs and WebP copies deleted behind our back
     his = history.items(HISTORY_MAX)
     loras, models, zimage = list_loras(), list_models(), list_zimage()
+    vm = _vm_inventory(models, zimage, loras)
     ds = {}
     caps = {}
     cap_text = {}
@@ -314,7 +352,7 @@ def _refresh(force: bool = False) -> None:
         if len(prompts) >= 40:
             break
     with _lock:
-        _cache.update(history=his, prompts=prompts, loras=loras, models=models, zimage=zimage,
+        _cache.update(vm=vm, history=his, prompts=prompts, loras=loras, models=models, zimage=zimage,
                       datasets=sorted(ds), ds=ds, caps=caps, cap_text=cap_text, zsizes=zsizes, grids=grids, lora_info=lora_info)
         pending = list(_want)
         _want.clear()

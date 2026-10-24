@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import run, ui
 
 from ... import presets, resources, settings
+from ...activity import log
 from ...engine import FP16_VAE, Z_REPO
 from ...fetch import LORAS, MODELS, ZIMAGE, add_file, fetch_loras, list_loras
 from ...service.files import files_on_vm, poke
@@ -142,42 +144,68 @@ def page(S):
                 button("Delete the ticked items", go, kind="bad")
         d.open()
 
-    def free():
-        gb = resources.clear_download_cache([engc.model_path or "", Z_REPO, FP16_VAE])
+    async def free():
+        gb = await run.io_bound(resources.clear_download_cache, [engc.model_path or "", Z_REPO, FP16_VAE])
+        poke()
         ui.notify(f"Freed {gb:.1f} GB" if gb >= 0.05 else "Nothing to free: the cache only holds files in use",
                   type="positive")
 
     def files():
         return files_on_vm()
 
-    def delete(p: Path):
-        p.unlink(missing_ok=True)
-        poke()
-        ui.notify(f"Deleted {p.name}")
-        draw()
+    def busy() -> str | None:
+        if jm.gpu_busy() or engc.busy:
+            return "Wait until nothing is running: a running job or image may be using it"
+        return None
+
+    def delete(e: dict):
+        if e["kind"] != "LoRA" and (why := busy()):
+            ui.notify(why, type="warning")
+            return
+
+        def work():  # a few GB: off the event loop; the list redraws when the file index changes
+            try:
+                in_use = e["cache_repo"] or str(e["path"])
+                if engc.loaded and in_use in (engc.model_path or ""):
+                    engc.kill()  # the loaded model reads from it; the next Generate loads again
+                if e["cache_repo"]:
+                    resources.delete_cache_repos([e["cache_repo"]])
+                else:
+                    e["path"].unlink(missing_ok=True)
+            except Exception as ex:
+                log.info(f"library delete of {e['name']} failed: {ex}")
+            poke()
+
+        threading.Thread(target=work, daemon=True).start()
+        ui.notify(f"Deleting {e['name']}" + ("; it downloads again when needed" if e["cache_repo"] else ""))
 
     seen = {"sig": None}
 
     def draw():
         fs = files()
-        seen["sig"] = [str(p) for _, p in fs]
+        seen["sig"] = [(e["name"], e["bytes"]) for e in fs]
         table.clear()
         with table:
             if not fs:
                 ui.label("Nothing here yet. Paste a link or drop a file on the left.").classes("muted")
-            for kind, p in fs:
+            else:
+                total = sum(e["bytes"] for e in fs)
+                ui.label(f"{len(fs)} items, {size_text(total)}. Models the app fetched by itself download again when "
+                         "needed if you delete them.").classes("hint pb-1")
+            for e in fs:
                 with ui.row().classes("w-full items-center no-wrap gap-3 py-2").style("border-bottom:1px solid var(--line)"):
-                    ui.label(p.name).classes("grow").style("overflow-wrap:anywhere")
-                    ui.label(kind).classes("t-small muted").style("width:120px")
-                    ui.label(size_text(p.stat().st_size)).classes("t-small muted tnum text-right").style("width:80px")
-                    ui.button(icon="download", on_click=lambda p=p: ui.download.file(p)) \
-                        .props("flat dense round size=sm").tooltip("Download to this computer")
-                    ui.button(icon="delete_outline", on_click=lambda p=p: confirm(
-                        f"Delete {p.name} from this VM?", "Delete", lambda: delete(p))) \
-                        .props("flat dense round size=sm").tooltip("Delete")
+                    ui.label(e["name"]).classes("grow").style("overflow-wrap:anywhere")
+                    ui.label(e["kind"]).classes("t-small muted").style("width:190px")
+                    ui.label(size_text(e["bytes"])).classes("t-small muted tnum text-right").style("width:80px")
+                    if e["cache_repo"]:
+                        ui.element("div").style("width:32px")  # a cache folder, not one file to download
+                    else:
+                        ui.button(icon="download", on_click=lambda e=e: ui.download.file(e["path"]))                             .props("flat dense round size=sm").tooltip("Download to this computer")
+                    ui.button(icon="delete_outline", on_click=lambda e=e: confirm(
+                        f"Delete {e['name']} from this VM?", "Delete", lambda: delete(e)))                         .props("flat dense round size=sm").tooltip("Delete")
 
     def tick():
-        if seen["sig"] != [str(p) for _, p in files()]:
+        if seen["sig"] != [(e["name"], e["bytes"]) for e in files()]:
             draw()
 
     draw()

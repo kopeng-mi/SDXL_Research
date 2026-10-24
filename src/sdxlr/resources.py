@@ -169,16 +169,29 @@ def _disk() -> tuple[float, list[tuple[str, float]]]:
 
 
 def clear_download_cache(keep: list[str]) -> float:
-    """Delete HF hub cache repos (re-downloadable) except those whose id appears in keep; returns GB freed."""
-    hub = HF_CACHE / "hub"
-    freed = 0.0
-    for d in hub.glob("models--*") if hub.exists() else []:
-        repo = d.name[len("models--"):].replace("--", "/")
-        if any(repo in k for k in keep):
-            continue
-        freed += _dir_gb(d)
-        shutil.rmtree(d, ignore_errors=True)
-    return freed
+    """Delete HF hub cache repos (re-downloadable) except those whose id appears in keep; returns GB freed.
+    Through huggingface_hub's own cache API: newer caches keep the files in a shared blobs folder, so deleting a
+    repo folder alone freed almost nothing."""
+    return delete_cache_repos([], keep=keep)
+
+
+def delete_cache_repos(repo_ids: list[str], keep: list[str] | None = None) -> float:
+    """Delete these HF cache repos (or, with keep, every repo not named in keep); returns GB freed."""
+    try:
+        from huggingface_hub import scan_cache_dir
+        info = scan_cache_dir()
+    except Exception:
+        return 0.0
+    if keep is not None:
+        pick = [r for r in info.repos if not any(r.repo_id in k for k in keep)]
+    else:
+        pick = [r for r in info.repos if r.repo_id in repo_ids]
+    revs = [rev.commit_hash for r in pick for rev in r.revisions]
+    if not revs:
+        return 0.0
+    strategy = info.delete_revisions(*revs)
+    strategy.execute()
+    return strategy.expected_freed_size / GB
 
 
 CSS = """

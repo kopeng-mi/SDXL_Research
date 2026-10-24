@@ -55,7 +55,9 @@ def picked_label(S) -> str:
 
 def loaded_label() -> str | None:
     if engc.kind == "zimage":
-        return "Z-Image " + Path(engc.model_path.split("|")[1]).stem
+        from ..paths import Z_MODELS
+        tr = engc.model_path.split("|")[1]
+        return "Z-Image " + next((k for k, v in Z_MODELS.items() if v == tr), Path(tr).stem)  # the picker's name
     if engc.kind == "sdxl":
         return "SDXL " + Path(engc.model_path).stem
     return None
