@@ -3,15 +3,15 @@
 Run in the Colab venv (Setup cell done, app NOT running: this script owns the GPU):
 
   SDXLR_DEBUG_OPS=1 /content/venv/bin/python tools/t4_check.py --images /content/t4_imgs
-      [--sections loads,te,edits,big,sdxl,hog] [--sdxl base|/path/model.safetensors] [--loras a.safetensors,b.safetensors]
+      [--sections loads,te,edits,big,sdxl,hog] [--sdxl base|/path/model.safetensors] [--loras a.safetensors,org/repo/file.safetensors,...]
 
 Sections (default: all but sdxl unless --sdxl is given; hog last, it ends with the guard killing the worker):
-  loads  Z-Image Q8 / Q6 / Q4: load time, peak worker RAM and VRAM, Speed-mode image at 896x1152, first preview step
+  loads  Z-Image Q8 / Q6 / Q4 / unsloth bnb-4bit: load time, peak worker RAM and VRAM, Speed-mode image at 896x1152, first preview step
   te     text encoder official nf4 vs unsloth 4-bit: load time, peak RAM, same-seed image difference
   edits  per image (max 2): painted part (plain, better blend), extend 25 %, whole, upscale 2x (plain, tile model);
          pixels outside the grown + feathered mask must be identical to the work copy
   big    a synthetic 6000x4000 photo through a painted edit (RAM must stay flat)
-  sdxl   the same Speed image + a painted edit with an SDXL checkpoint, with 0 / 1 / 3 LoRAs (timings)
+  sdxl   the same Speed image + a painted edit with an SDXL checkpoint, with 0 / 1 / 3 LoRAs, unfused and fused
   hog    the worker eats RAM until the guard kills it: the script (the "web process") must survive and the next
          Generate must work
 
@@ -161,7 +161,7 @@ def put_source(path: Path) -> str:
 # ---------- sections ----------
 def sec_loads(a) -> list[dict]:
     recs = []
-    for z in ("turbo Q8", "turbo Q6", "turbo Q4"):
+    for z in ("turbo Q8", "turbo Q6", "turbo Q4", "turbo 4-bit (unsloth)"):
         engc.kill()  # clean peaks for every load
         S = base_state(z_model=z)
         recs.append(run(f"load {z}", load_blocking, S))
@@ -253,13 +253,25 @@ def sec_sdxl(a) -> list[dict]:
     if a.loras:
         import shutil
         LORAS.mkdir(parents=True, exist_ok=True)
+        from sdxlr.fetch import fetch
         for f in a.loras.split(","):
-            shutil.copy2(f, LORAS / Path(f).name)
-            loras.append([Path(f).name, 0.7])
+            if Path(f).exists():
+                shutil.copy2(f, LORAS / Path(f).name)
+                name = Path(f).name
+            else:  # org/repo/file on HF (or a URL)
+                name = fetch(f, LORAS).name
+            loras.append([name, 0.7])
         files._refresh(force=True)
-    for n in sorted({0, min(1, len(loras)), min(3, len(loras))}):
-        recs.append(run(f"SDXL gen {n} LoRAs", generate_blocking, base_state(**sd, loras=loras[:n])))
-        recs.append(run(f"SDXL gen {n} LoRAs (warm)", generate_blocking, base_state(**sd, loras=loras[:n])))
+    for fused in ((False, True) if loras else (False,)):
+        if fused:  # LoRAs merged into the weights: the worker reads SDXLR_FUSE when it starts
+            engc.kill()
+            os.environ["SDXLR_FUSE"] = "1"
+        tag = " fused" if fused else ""
+        for n in sorted({0, min(1, len(loras)), min(3, len(loras))}):
+            recs.append(run(f"SDXL gen {n} LoRAs{tag}", generate_blocking, base_state(**sd, loras=loras[:n])))
+            recs.append(run(f"SDXL gen {n} LoRAs{tag} (warm)", generate_blocking, base_state(**sd, loras=loras[:n])))
+    os.environ.pop("SDXLR_FUSE", None)
+    engc.kill()
     imgs = sorted(p for p in Path(a.images).iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"))[:1]
     if imgs:
         recs += _edits_for(put_source(imgs[0]), "SDXL", {"sdxl_model": a.sdxl, "vae": "fp16fix"}, "SDXL img1")

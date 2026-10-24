@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import os
 import re
 import sys
 import time
@@ -128,12 +129,14 @@ class Engine:
         self._prev = None  # live preview decoder (engine/preview.py), made on first use
         self._cn = None  # (name, ZImageControlNetModel): one ControlNet in VRAM at a time
         self._cn_pipes: dict = {}
+        self._fused: tuple | None = None  # SDXL LoRA set merged into the weights (SDXLR_FUSE=1)
 
     # ---- model ----
     def unload(self) -> None:
         self.pipe = self._inpaint = self._img2img = None
         self._cn = None
         self._cn_pipes = {}
+        self._fused = None
         self.kind = self.model_path = self._sampler = None
         self.adapters.clear()
         self.adapter_mb.clear()
@@ -201,6 +204,12 @@ class Engine:
         if old_tr is not None:
             status("Keeping the loaded model")
             tr, name = old_tr, "kept"
+        elif ":" in transformer and not Path(transformer).exists():  # 'org/repo:subfolder', e.g. unsloth's bnb-4bit DiT
+            repo, _, sub = transformer.partition(":")
+            status("Loading the model (pre-quantized)")
+            tr = ZImageTransformer2DModel.from_pretrained(repo, subfolder=sub, torch_dtype=dt)
+            self._fp16_compute(tr)  # stored with bf16 compute, which the T4 can't do fast
+            name = f"{repo.split('/')[-1]} ({sub})"
         else:
             status("Getting the model file")
             src = fetch(transformer, MODELS / "zimage")
@@ -243,8 +252,8 @@ class Engine:
 
     @staticmethod
     def _fp16_compute(te) -> None:
-        """The unsloth encoder stores bnb_4bit_compute_dtype bfloat16, which a T4 cannot do fast (or at all):
-        run every 4-bit Linear in fp16."""
+        """unsloth's pre-quantized encoder and DiT store bnb_4bit_compute_dtype bfloat16, which a T4 cannot do fast
+        (or at all): run every 4-bit Linear in fp16."""
         try:
             import bitsandbytes as bnb
         except ImportError:
@@ -292,11 +301,21 @@ class Engine:
         return name
 
     def set_loras(self, loras: list[tuple[str, float]]) -> None:
-        pinned = tuple(p for p, w in loras if p and w != 0)
-        active = [(self._adapter(p, pinned), float(w)) for p, w in loras if p and w != 0]
+        want = tuple((p, round(float(w), 4)) for p, w in loras if p and w != 0)
+        fuse = self.kind == "sdxl" and os.environ.get("SDXLR_FUSE") == "1"  # GGUF/bnb weights (Z-Image) can't be fused
+        if self._fused is not None and self._fused != want:
+            self.pipe.unfuse_lora()  # back to the base weights before the set changes (or an adapter is evicted)
+            self._fused = None
+        if fuse and want and self._fused == want:
+            return  # already merged into the weights: nothing to do per image
+        pinned = tuple(p for p, _ in want)
+        active = [(self._adapter(p, pinned), w) for p, w in want]
         if active:
             self.pipe.enable_lora()
             self.pipe.set_adapters([n for n, _ in active], adapter_weights=[w for _, w in active])
+            if fuse:  # merged weights: no per-step LoRA math (fp16 drift after many switches; measured on T4)
+                self.pipe.fuse_lora(adapter_names=[n for n, _ in active], lora_scale=1.0)
+                self._fused = want
         elif self.adapters:
             self.pipe.disable_lora()
 

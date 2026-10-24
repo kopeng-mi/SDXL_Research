@@ -88,7 +88,12 @@ def prefetch_zimage(transformer: str, text_encoder: str) -> None:
     from huggingface_hub import snapshot_download
 
     from .paths import Z_REPO
-    print(f"model file: {fetch(transformer, MODELS / 'zimage')}", flush=True)
+    if ":" in transformer and not Path(transformer).exists():  # 'org/repo:subfolder' (pre-quantized diffusers folder)
+        repo, _, sub = transformer.partition(":")
+        snapshot_download(repo, allow_patterns=[f"{sub}/*"])
+        print(f"model file: {transformer}", flush=True)
+    else:
+        print(f"model file: {fetch(transformer, MODELS / 'zimage')}", flush=True)
     repo, _, sub = text_encoder.partition(":")
     snapshot_download(repo, allow_patterns=[f"{sub}/*"] if sub else None)
     print(f"text encoder: {text_encoder}", flush=True)
