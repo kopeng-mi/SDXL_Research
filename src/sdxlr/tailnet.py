@@ -43,8 +43,15 @@ def cli(*args: str, timeout: float = 60) -> subprocess.CompletedProcess:
                           timeout=timeout)
 
 
+def _running() -> bool:
+    r = cli("status", "--json", timeout=10) if (BIN / "tailscale").exists() else None
+    return bool(r and r.returncode == 0 and json.loads(r.stdout).get("BackendState") == "Running")
+
+
 def up(port: int, authkey: str | None = None) -> str:
-    """Join the tailnet as `sdxlr`; returns the address to open."""
+    """Join the tailnet as `sdxlr` (or reuse the running connection); returns the address to open."""
+    if _running():  # app restarted: tailscaled keeps the connection, no key needed
+        return _address(port)
     key = authkey or os.environ.get("TS_AUTHKEY")
     if not key:
         raise RuntimeError("TS_AUTHKEY is not set (add it in Colab Secrets)")
@@ -61,6 +68,10 @@ def up(port: int, authkey: str | None = None) -> str:
     r = cli("up", f"--auth-key={key}", f"--hostname={HOSTNAME}", "--accept-dns=false", timeout=90)
     if r.returncode != 0:
         raise RuntimeError(f"tailscale up failed: {(r.stderr or r.stdout).strip()[-300:]}")
+    return _address(port)
+
+
+def _address(port: int) -> str:
     st = json.loads(cli("status", "--json").stdout)
     dns = st["Self"].get("DNSName", "").rstrip(".")
     ip = (st["Self"].get("TailscaleIPs") or ["?"])[0]
