@@ -121,7 +121,7 @@ def _health(engc) -> None:
         last = time.time()
         try:
             beat = engc.beat or {}
-            d = shutil.disk_usage(str(WORK.anchor))
+            d = shutil.disk_usage(str(WORK.resolve().anchor))
             log.info(f"health: RAM free {mem_available_mb() / 1024:.1f} GB | engine worker rss {beat.get('rss', 0):.1f} GB, "
                      f"VRAM alloc {beat.get('alloc', 0):.1f} GB | disk free {d.free / GB:.0f} GB")
         except Exception as e:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from nicegui import ui
 
-from ..core import datasets, err, images, model_names, submit_train, train_estimate
+from ...service import files
+from ..core import datasets, err, model_names, submit_train, train_estimate
 from ..theme import JobLine, labeled, main_button, seg, title
 
 
@@ -89,10 +90,9 @@ def page(S):
             last["k"] = k
             h, d = train_estimate(S)
             eta_h.text, eta_d.text = h, d
-            imgs = images(S["t_ds"])
-            caps = sum(p.with_suffix(".txt").exists() for p in imgs)
-            ds_info.text = (f"{S['t_ds']}: {len(imgs)} photos, {caps} with captions"
-                            + (". Write captions in Dataset first for better results" if imgs and caps < len(imgs) else "")) \
+            n, caps = files.ds_counts(S["t_ds"])
+            ds_info.text = (f"{S['t_ds']}: {n} photos, {caps} with captions"
+                            + (". Write captions in Dataset first for better results" if n and caps < n else "")) \
                 if S["t_ds"] else ""
         if list(ds.options) != datasets():
             ds.set_options(datasets(), value=S["t_ds"] if S["t_ds"] in datasets() else None)

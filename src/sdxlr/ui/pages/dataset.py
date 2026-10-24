@@ -6,6 +6,7 @@ from pathlib import Path
 
 from nicegui import ui
 
+from ...service import files
 from ..core import UPLOADS, datasets, err, images, submit_caption, submit_import, thumb
 from ..theme import JobLine, button, labeled, main_button, title
 
@@ -92,6 +93,7 @@ def page(S):
             t.write_text(text, encoding="utf-8")
         elif t.exists():
             t.unlink()  # an empty caption is no caption
+        files.poke()
         update_counts()
 
     def big(p: Path):
@@ -104,13 +106,12 @@ def page(S):
     seen = {"sig": None}
 
     def update_counts():
-        imgs = images(S["ds_pick"])
-        caps = sum(p.with_suffix(".txt").exists() for p in imgs)
-        counts.text = f"{len(imgs)} photos, {caps} with captions" if S["ds_pick"] else ""
+        n, caps = files.ds_counts(S["ds_pick"])
+        counts.text = f"{n} photos, {caps} with captions" if S["ds_pick"] else ""
 
     def draw():
         imgs = images(S["ds_pick"])
-        seen["sig"] = (S["ds_pick"], [p.name for p in imgs], sum(p.with_suffix(".txt").exists() for p in imgs))
+        seen["sig"] = (S["ds_pick"], [p.name for p in imgs], files.ds_counts(S["ds_pick"])[1])
         update_counts()
         grid.clear()
         with grid:
@@ -119,19 +120,18 @@ def page(S):
             elif not imgs:
                 ui.label("No photos in this dataset yet.").classes("muted")
             for p in imgs:
-                t = p.with_suffix(".txt")
                 with ui.column().classes("tile gap-1"):
                     ui.image(thumb(p)).props("no-transition no-spinner").on("click", lambda p=p: big(p))
-                    ui.textarea(value=t.read_text(encoding="utf-8") if t.exists() else "", placeholder="No caption") \
+                    ui.textarea(value=files.caption(S["ds_pick"], p.name), placeholder="No caption") \
                         .props("outlined dense autogrow input-style='font-size:13px;line-height:1.35'").classes("w-full") \
                         .on("blur", lambda e, p=p: save_caption(p, e.sender.value))
 
     def tick():
         names = datasets()
-        if list(pick.options) != sorted({*names, *( [S["ds_pick"]] if S["ds_pick"] else [])}):
+        if list(pick.options) != sorted({*names, *([S["ds_pick"]] if S["ds_pick"] else [])}):
             pick.set_options(sorted({*names, *([S["ds_pick"]] if S["ds_pick"] else [])}), value=S["ds_pick"])
         imgs = images(S["ds_pick"])
-        sig = (S["ds_pick"], [p.name for p in imgs], sum(p.with_suffix(".txt").exists() for p in imgs))
+        sig = (S["ds_pick"], [p.name for p in imgs], files.ds_counts(S["ds_pick"])[1])
         if seen["sig"] != sig:
             draw()
 

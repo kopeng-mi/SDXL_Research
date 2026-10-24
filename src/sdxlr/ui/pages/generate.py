@@ -8,8 +8,9 @@ from pathlib import Path
 
 from nicegui import run, ui
 
-from ... import history, presets
+from ... import presets
 from ...activity import Cancelled, act
+from ...service import files
 from ..core import (ASPECTS, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, engc,
                     err, generate_blocking, is_loaded, load_blocking, lora_names, model_names, picked_label, reuse,
                     save_upload, task_is_loading, thumb, url, z_names)
@@ -53,6 +54,7 @@ async def do_generate(S):
     try:
         paths, info, seed = await run.io_bound(generate_blocking, copy.deepcopy(S), task)
         task.finish(info)
+        files.poke()
         S.update(image=paths[0], info=info, last_seed=seed, boxes=[])
         if tool:  # keep working on the new result; the original stays in the recent images
             S["src"] = paths[0]
@@ -113,7 +115,7 @@ def page(S):
         def fill_recent():
             recent_menu.clear()
             with recent_menu:
-                ps = history.prompts()
+                ps = files.prompts()
                 if not ps:
                     ui.menu_item("No prompts yet").props("disable")
                 for p in ps:
@@ -344,7 +346,7 @@ def page(S):
             ov.set_visibility(False)
 
     def draw_recent():
-        items = history.items(12)
+        items = files.items(12)
         sig = [str(p) for p, _ in items] + [shown_img()]
         if sig == shown["recent"]:
             return
@@ -440,10 +442,10 @@ def page(S):
         actions.set_visibility(has)
         for b in (area_b, whole_b, up_b):
             b.set_visibility(not S["tool"])
-        meta_p = Path(S["image"]).with_suffix(".json") if has else None
-        uploaded = bool(meta_p and meta_p.exists() and '"uploaded": true' in meta_p.read_text(encoding="utf-8"))
+        meta_p = files.meta(S["image"]) if has else None
+        uploaded = bool(meta_p and meta_p.get("uploaded"))
         reuse_b.set_visibility(has and not S["tool"] and not uploaded)
-        latest = history.items(1)
+        latest = files.items(1)
         is_old = has and latest and str(latest[0][0]) != S["image"]
         txt = "An earlier image. Its settings may differ from the form." if is_old and not S["tool"] and not uploaded else ""
         if earlier.text != txt:

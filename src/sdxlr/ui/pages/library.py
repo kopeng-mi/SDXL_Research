@@ -8,7 +8,8 @@ from nicegui import ui
 
 from ... import presets, resources, settings
 from ...engine import FP16_VAE, Z_REPO
-from ...fetch import LORAS, MODELS, ZIMAGE, add_file, fetch_loras, list_loras, list_models, list_zimage
+from ...fetch import LORAS, MODELS, ZIMAGE, add_file, fetch_loras, list_loras
+from ...service.files import files_on_vm, poke
 from ..core import SHRED, UPLOADS, engc, err, jm, shred, shred_sizes, size_text
 from ..theme import JobLine, button, confirm, labeled, main_button, seg, title
 
@@ -55,6 +56,7 @@ def page(S):
                         ui.notify(f"Added {', '.join(names)}", type="positive")
                     except Exception as ex:
                         ui.notify(err(ex), type="negative")
+                    poke()
                     draw()
 
                 ui.upload(label="Or drop files here: .safetensors, .gguf, or a zip of LoRAs", multiple=True,
@@ -73,6 +75,7 @@ def page(S):
                     settings.set(sync_repo=repo)
                     try:
                         ui.notify(presets.push(repo) if direction == "push" else presets.pull(repo), type="positive")
+                        poke()
                         draw()
                     except Exception as e:
                         ui.notify(err(e), type="negative")
@@ -142,11 +145,11 @@ def page(S):
                   type="positive")
 
     def files():
-        return ([("SDXL checkpoint", p) for p in list_models()] + [("Z-Image model", p) for p in list_zimage()]
-                + [("LoRA", p) for p in list_loras()])
+        return files_on_vm()
 
     def delete(p: Path):
         p.unlink(missing_ok=True)
+        poke()
         ui.notify(f"Deleted {p.name}")
         draw()
 

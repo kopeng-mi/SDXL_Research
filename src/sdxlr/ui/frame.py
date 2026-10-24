@@ -15,7 +15,7 @@ from nicegui import app, ui
 
 from .. import presets, session, settings
 from ..activity import log, setup_logging
-from ..paths import LORAS, MODELS
+from ..paths import LORAS, MODELS, THUMBS
 from ..service.jobs import fmt_secs
 from . import core
 from .core import (USAGE, busy_task, engc, estimate_preview, jm, loaded_label, running_job, state_for,
@@ -196,7 +196,7 @@ def main() -> None:
     setup_logging()
     from ..service import guard
     guard.start(core.engc, core.jm)
-    for d in (MODELS, LORAS, core.DATASETS, core.OUTPUTS, core.UPLOADS, core.THUMBS, presets.PRESETS):
+    for d in (MODELS, LORAS, core.DATASETS, core.OUTPUTS, core.UPLOADS, THUMBS, presets.PRESETS):
         d.mkdir(parents=True, exist_ok=True)
     if a.sync and settings.get()["sync_repo"]:
         try:
@@ -205,6 +205,8 @@ def main() -> None:
             log.info(f"sync pull failed: {e}")
     threading.Thread(target=core.autosave_loop, daemon=True).start()
     threading.Thread(target=core.sample_usage_loop, daemon=True).start()
+    from ..service import files as _files
+    _files.start_refresh()  # cached listings for every timer (first scan synchronous)
     app.add_media_files("/work", core.WORK)
     secret_f = core.WORK / ".ui_secret"
     if not secret_f.exists():

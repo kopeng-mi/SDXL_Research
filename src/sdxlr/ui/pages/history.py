@@ -7,6 +7,7 @@ from pathlib import Path
 from nicegui import ui
 
 from ... import history
+from ...service import files
 from ..core import err, reuse, thumb, url
 from ..theme import button, title
 
@@ -83,7 +84,7 @@ def page(S):
     seen = {"top": "x"}
 
     def draw():
-        items = history.items(150)
+        items = files.items(150)
         seen["top"] = items[0][0].name if items else None
         grid.clear()
         with grid:
@@ -97,7 +98,7 @@ def page(S):
                         .style("line-height:1.3; height:34px; overflow:hidden")
 
     def tick():
-        items = history.items(1)
+        items = files.items(1)
         if (items[0][0].name if items else None) != seen["top"]:
             draw()
 

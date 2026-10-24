@@ -24,8 +24,9 @@ from .. import history, resources, session
 from ..activity import LOGS, log
 from ..engine import SAMPLERS, Z_ENCODERS, Z_MODELS  # noqa: F401  (SAMPLERS used by pages)
 from ..modes import ASPECTS, STYLES, train_eta  # noqa: F401  (ASPECTS/STYLES used by pages)
-from ..paths import DATASETS, MODELS, OUTPUTS, SDXL_BASE, THUMBS, UPLOADS, WORK  # noqa: F401  (UPLOADS: pages)
-from ..service.files import datasets, images, lora_names, lora_path, model_names, model_path, z_names, z_path  # noqa: F401 (pages)
+from ..paths import DATASETS, MODELS, OUTPUTS, SDXL_BASE, UPLOADS, WORK  # noqa: F401  (UPLOADS/DATASETS: pages)
+from ..service.files import (datasets, images, lora_names, lora_path, model_names, model_path, poke, thumb, url,  # noqa: F401
+                             z_names, z_path)
 from ..service.gen import (TOOL_LABEL, busy_task, check_generate, check_model, engc, generate_blocking,  # noqa: F401
                            is_loaded, load_blocking, loaded_label, picked_label, reuse, running_job, task_is_loading)
 from ..service.jobs import fmt_secs, gpu_lock, jm  # noqa: F401
@@ -96,21 +97,6 @@ def sample_usage_loop() -> None:
 
 
 # ---------- files ----------
-def url(p) -> str:
-    """Browser URL of a file under WORK (served at /work)."""
-    return f"/work/{Path(p).relative_to(WORK).as_posix()}?v={int(Path(p).stat().st_mtime)}"
-
-
-def thumb(p: Path, size: int = 320) -> str:
-    t = THUMBS / Path(p).relative_to(WORK).with_suffix(f".{size}.jpg")
-    if not t.exists() or t.stat().st_mtime < Path(p).stat().st_mtime:
-        t.parent.mkdir(parents=True, exist_ok=True)
-        im = Image.open(p).convert("RGB")
-        im.thumbnail((size, size))
-        im.save(t, quality=85)
-    return url(t)
-
-
 def size_text(n: int) -> str:
     return f"{n / 2**30:.2f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB" if n >= 2**20 else f"{max(n, 1) / 2**10:.0f} KB"
 
@@ -147,6 +133,7 @@ def save_upload(data: bytes, name: str) -> str:
     img.convert("RGB").save(p)
     history.save(p, {"uploaded": True, "name": name, "prompt_raw": "", "made": time.strftime("%Y-%m-%d %H:%M:%S"),
                      "size": list(img.size)})
+    poke()
     return str(p)
 
 
@@ -181,6 +168,7 @@ def shred(kinds: list[str]) -> float:
         if k == "cache":
             shutil.rmtree(HF_CACHE / "hub", ignore_errors=True)
             shutil.rmtree(HF_CACHE / "xet", ignore_errors=True)
+    poke()
     log.info(f"deleted from the VM: {', '.join(kinds)}")
     return sum(sizes[k] for k in kinds)
 
