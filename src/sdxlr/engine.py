@@ -21,6 +21,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import torch
 from PIL import Image
@@ -70,6 +71,7 @@ class Job:
     image: Image.Image | None = None  # inpaint source
     mask: Image.Image | None = None  # white = repaint
     strength: float = 0.75
+    on_step: Callable[[int, int], None] | None = None  # (done, total) after each denoising step
 
 
 def _fix_text_encoder_lora_keys(pipe) -> None:
@@ -93,6 +95,18 @@ def _fix_text_encoder_lora_keys(pipe) -> None:
         return (ren(sd), ren(alphas), *rest)
 
     pipe.lora_state_dict = fixed
+
+
+def _step_cb(job: Job) -> dict:
+    """callback_on_step_end that reports (done, total); total is the pipeline's own step count."""
+    if job.on_step is None:
+        return {}
+
+    def cb(pipe, i, t, kw):
+        job.on_step(i + 1, getattr(pipe, "_num_timesteps", None) or job.steps)
+        return kw
+
+    return {"callback_on_step_end": cb}
 
 
 def vram() -> str:
@@ -129,7 +143,7 @@ class Engine:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def load(self, path: str, vae: str = "fp16fix") -> str:
+    def load(self, path: str, vae: str = "fp16fix", status: Callable[[str], None] = lambda s: None) -> str:
         if self.pipe is not None and self.model_path == path and self.vae_mode == vae:
             return f"already loaded: {Path(path).name}"
         from diffusers import AutoencoderKL, StableDiffusionXLPipeline
@@ -138,18 +152,21 @@ class Engine:
         t = time.time()
         kw = {"torch_dtype": torch.float16, "use_safetensors": True}
         if vae == "fp16fix":
+            status("Getting the fp16 VAE")
             kw["vae"] = AutoencoderKL.from_pretrained(FP16_VAE, torch_dtype=torch.float16)
+        status("Reading the checkpoint")
         pipe = StableDiffusionXLPipeline.from_single_file(path, **kw)
         if vae != "fp16fix":
             pipe.vae.config.force_upcast = True  # model VAE in fp16 NaNs; upcast only for decode
         pipe.set_progress_bar_config(disable=True)
         _fix_text_encoder_lora_keys(pipe)
+        status("Moving to GPU")
         self.pipe = pipe.to("cuda")
         self.kind, self.model_path, self.vae_mode = "sdxl", path, vae
         return f"loaded {Path(path).name} in {time.time() - t:.0f}s | {vram()}"
 
     def load_zimage(self, transformer: str = Z_MODELS["turbo Q8"], text_encoder: str = Z_ENCODERS["official"],
-                    te_quant: str = "nf4") -> str:
+                    te_quant: str = "nf4", status: Callable[[str], None] = lambda s: None) -> str:
         """Z-Image: GGUF (or safetensors) transformer + Qwen3 text encoder, fp16 with the T4 overflow fix.
 
         transformer:  org/repo/file, URL or path (.gguf recommended on T4)
@@ -168,7 +185,9 @@ class Engine:
         self.unload()
         t = time.time()
         dt = torch.float16
+        status("Getting the model file")
         src = fetch(transformer, MODELS / "zimage")
+        status("Loading the model")
         kw = {"torch_dtype": dt, "config": Z_REPO, "subfolder": "transformer"}
         if src.suffix == ".gguf":
             kw["quantization_config"] = GGUFQuantizationConfig(compute_dtype=dt)
@@ -180,10 +199,13 @@ class Engine:
             q = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=dt)
         elif te_quant == "int8":
             q = BitsAndBytesConfig(load_in_8bit=True)
+        status(f"Getting the text encoder ({te_quant})")
         te = AutoModel.from_pretrained(repo, subfolder=sub or "", dtype=dt, quantization_config=q)
 
+        status("Getting VAE and configs")
         pipe = ZImagePipeline.from_pretrained(Z_REPO, transformer=tr, text_encoder=te, torch_dtype=dt)
         pipe.set_progress_bar_config(disable=True)
+        status("Moving to GPU")
         self.pipe = pipe.to("cuda")
         patch(self.pipe.transformer)  # fp16 on T4 otherwise gives black images
         self.kind, self.model_path, self.vae_mode = "zimage", key, None
@@ -243,7 +265,7 @@ class Engine:
         self.set_loras(job.loras)
         gen = [torch.Generator("cpu").manual_seed(seed + i) for i in range(job.count)]
         common = dict(prompt=[job.prompt] * job.count, num_inference_steps=job.steps, guidance_scale=job.cfg,
-                      generator=gen)
+                      generator=gen, **_step_cb(job))
         if job.cfg > 1 and job.negative:
             common["negative_prompt"] = [job.negative] * job.count
         if job.image is not None:
@@ -266,7 +288,7 @@ class Engine:
         emb = self._encode(job, lora_key)
         rep = {k: v.repeat(job.count, *[1] * (v.dim() - 1)) for k, v in emb.items()}
         gen = [torch.Generator("cpu").manual_seed(seed + i) for i in range(job.count)]
-        common = dict(num_inference_steps=job.steps, guidance_scale=job.cfg, generator=gen, **rep)
+        common = dict(num_inference_steps=job.steps, guidance_scale=job.cfg, generator=gen, **rep, **_step_cb(job))
         if job.image is not None:
             if self._inpaint is None:
                 from diffusers import StableDiffusionXLInpaintPipeline
