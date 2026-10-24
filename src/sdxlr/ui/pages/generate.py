@@ -248,6 +248,7 @@ def page(S):
             reuse_b = button("Reuse its settings", lambda: reuse_shown(), icon="settings_backup_restore")
             edit_b = button("Change an area", lambda: enter_edit(), icon="crop_free")
             dl_b = button("Download", lambda: ui.download.file(S["image"]), icon="download")
+            clear_b = button("Clear", lambda: (S.update(image=None, edit=False, boxes=[]), draw_canvas()), icon="close")                 .tooltip("Empty the image area. The image stays in History")
         recent = ui.row().classes("w-full gap-2")
 
     shown = {"img": None, "edit": None, "boxes": -1, "recent": None}
@@ -371,7 +372,7 @@ def page(S):
         # image actions and hints
         banner.set_visibility(S["edit"])
         has = bool(S["image"])
-        for b in (reuse_b, edit_b, dl_b):
+        for b in (reuse_b, edit_b, dl_b, clear_b):
             b.set_visibility(has and not S["edit"])
         latest = history.items(1)
         is_old = has and latest and str(latest[0][0]) != S["image"]
