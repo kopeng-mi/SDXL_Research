@@ -65,7 +65,9 @@ async def do_generate(S, on_done=None):
             ui.notify(f"{TOOL_LABEL[tool]}: done{more}", type="positive")
     except Cancelled:
         task.fail("")
-        ui.notify("Cancelled")
+        files.poke()  # variations finished before the cancel are already in History
+        ui.notify("Cancelled. Variations already finished are kept in the recent images" if (tool and S["edit_count"] > 1)
+                  else "Cancelled")
     except Exception as e:
         task.fail(err(e))
         ui.notify(err(e), type="negative", multi_line=True)
@@ -372,6 +374,7 @@ def page(S):
             ui.space()
 
             async def on_upload(e):
+                up.reset()  # max_files=1: clear the finished file so the next upload is accepted
                 try:
                     p = await run.io_bound(save_upload, await e.file.read(), e.file.name)  # decoding a big photo must not block the page
                 except ValueError as ex:
@@ -441,7 +444,8 @@ def page(S):
                     shown["need"] = src
                 else:
                     with painter_box:
-                        painter["el"] = MaskPainter(u, S["ptool"], int(S["brush"]), mask_preload(src),
+                        painter["el"] = MaskPainter(u, S["ptool"], int(S["brush"]),
+                                                    None if painter.get("fresh") == src else mask_preload(src),
                                                     on_changed=on_painter_changed, on_device=on_device)
                     painter["src"] = src
         painter_box.set_visibility(S["tool"] == "area" and not reviewing() and painter["el"] is not None)
@@ -464,6 +468,7 @@ def page(S):
                 ui.image(u or url(img)).classes("w-full").props("fit=contain no-transition")
 
     def keep():
+        painter["fresh"] = S["image"]  # Keep starts from an empty mask; only picking an old image reloads its mask
         S.update(src=S["image"], mask_id=None)
         pending["result"] = None
         draw_canvas()
