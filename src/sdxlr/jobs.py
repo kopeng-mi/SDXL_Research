@@ -6,6 +6,8 @@ the app's in-process image model is unloaded (on_gpu_job_start) and it can be
 reloaded afterwards (on_gpu_job_end).
 
 Progress is parsed from tqdm-style "12/300" output; ETA = elapsed / done * left.
+Every job line goes to the app log (logs/app.log + the Launch cell) and to
+logs/jobs/<id>.log; progress redraws are logged at most every 5 s.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .activity import LOG_EVERY, LOGS, log
 
 REPO = Path(__file__).resolve().parents[2]
 _PROGRESS = re.compile(r"(\d+)/(\d+)\s*\[")  # tqdm: " 12/300 [00:10<..."
@@ -38,6 +42,7 @@ class JobInfo:
     started: float | None = None
     ended: float | None = None
     done: int = 0
+    logged: float = 0.0
     total: int = 0
     log: deque = field(default_factory=lambda: deque(maxlen=400))
     returncode: int | None = None
@@ -122,6 +127,7 @@ class JobManager:
 
     def _run(self, job: JobInfo) -> None:
         job.status, job.started = "running", time.time()
+        log.info(f"[job {job.id}] {job.title}: started")
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
                "TOKENIZERS_PARALLELISM": "false", "PYTHONPATH": str(REPO / "src")}
         try:
@@ -140,15 +146,24 @@ class JobManager:
         job.ended = time.time()
         if job.status != "cancelled":
             job.status = "done" if job.returncode == 0 else "failed"
+        log.info(f"[job {job.id}] {job.title}: {job.status} (exit {job.returncode}, {fmt_secs(job.ended - job.started)})")
 
     @staticmethod
     def _line(job: JobInfo, text: str) -> None:
         if not text:
             return
+        (LOGS / "jobs").mkdir(parents=True, exist_ok=True)
+        with open(LOGS / "jobs" / f"{job.id}.log", "a", encoding="utf-8") as f:
+            f.write(text + "\n")
         m = _PROGRESS.search(text) or _STEP.search(text)
         if m:
             job.done, job.total = int(m.group(1)), int(m.group(2))
+            if time.time() - job.logged > LOG_EVERY:
+                job.logged = time.time()
+                log.info(f"[job {job.id}] {text}")
             if job.log and (_PROGRESS.search(job.log[-1]) or "it/s" in job.log[-1] or "s/it" in job.log[-1]):
                 job.log[-1] = text  # replace the previous progress line instead of piling up
                 return
+        else:
+            log.info(f"[job {job.id}] {text}")
         job.log.append(text)
