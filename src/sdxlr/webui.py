@@ -378,8 +378,8 @@ body, .q-layout, .q-page-container {background:var(--bg) !important; color:var(-
 .thumb {width:96px; height:96px; object-fit:cover; border-radius:8px; cursor:pointer; border:1px solid var(--line);}
 .thumb:hover {border-color:var(--muted);}
 .grid-thumb {width:148px; height:148px; object-fit:cover; border-radius:8px; cursor:pointer;}
-.gen-btn {background:var(--text) !important; color:#1C1F24 !important; height:48px; font-size:16px;}
-.gen-btn.busy {background:var(--panel) !important; color:var(--work) !important; border:1px solid var(--work);}
+.gen-btn {height:48px; font-size:16px;}
+.q-btn.gen-btn.busy {background:var(--panel) !important; color:var(--work) !important; outline:1px solid var(--work);}
 .q-field--outlined .q-field__control:before {border-color:var(--line);}
 </style>
 """
@@ -470,10 +470,10 @@ def page_generate(S, sheet):
                         .props("flat dense no-caps").classes("muted")
 
             draw_loras()
-            gen_b = ui.button("Generate", on_click=lambda: do_generate(S)).classes("w-full gen-btn").props("unelevated no-caps")
+            gen_b = ui.button("Generate", on_click=lambda: do_generate(S)).classes("w-full gen-btn").props("unelevated no-caps color=grey-3 text-color=grey-10")
             info = ui.label().bind_text_from(S, "info").classes("t-small muted tnum")
 
-        with ui.column().classes("grow gap-3"):
+        with ui.column().classes("gap-3").style("flex:1 1 0; min-width:0"):
             canvas = ui.element("div").classes("canvas w-full")
             status = ui.label().classes("t-small work tnum")
             prog = ui.html('<div class="progress"><span style="width:0%"></span></div>', sanitize=False).classes("w-full")
@@ -688,7 +688,7 @@ def page_dataset(S, sheet):
                 S["ds_pick"] = name
                 ui.notify("Importing. Progress is in the sidebar")
 
-            ui.button("Import", on_click=do_import).props("unelevated no-caps").classes("gen-btn w-full")
+            ui.button("Import", on_click=do_import).props("unelevated no-caps color=grey-3 text-color=grey-10").classes("gen-btn w-full")
 
             with ui.column().classes("w-full gap-3 section"):
                 ui.label("Write captions").classes("t-head")
@@ -708,9 +708,9 @@ def page_dataset(S, sheet):
                     except Exception as e:
                         ui.notify(str(e), type="warning")
 
-                ui.button("Write captions", on_click=do_caption).props("unelevated no-caps").classes("gen-btn w-full")
+                ui.button("Write captions", on_click=do_caption).props("unelevated no-caps color=grey-3 text-color=grey-10").classes("gen-btn w-full")
 
-        with ui.column().classes("grow gap-3"):
+        with ui.column().classes("gap-3").style("flex:1 1 0; min-width:0"):
             with ui.row().classes("w-full items-end gap-3"):
                 pick = field(ui.select(_datasets(), label="Dataset"), S, "ds_pick").classes("w-64")
                 counts = ui.label().classes("muted tnum")
@@ -723,7 +723,7 @@ def page_dataset(S, sheet):
             ta = ui.textarea("Caption", value=t.read_text(encoding="utf-8") if t.exists() else "").props("outlined autogrow").classes("w-full")
             with ui.row():
                 ui.button("Save caption", on_click=lambda: (t.write_text(ta.value.strip(), encoding="utf-8"),
-                                                            ui.notify("Caption saved"), d.close(), draw())).props("unelevated no-caps")
+                                                            ui.notify("Caption saved"), d.close(), draw())).props("unelevated no-caps color=grey-3 text-color=grey-10")
                 ui.button("Close", on_click=d.close).props("flat no-caps")
         d.open()
 
@@ -791,7 +791,7 @@ def page_train(S, sheet):
             except Exception as e:
                 ui.notify(str(e), type="warning")
 
-        ui.button("Start training", on_click=start).props("unelevated no-caps").classes("gen-btn w-full")
+        ui.button("Start training", on_click=start).props("unelevated no-caps color=grey-3 text-color=grey-10").classes("gen-btn w-full")
         ui.label("A LoRA is saved every epoch; compare them in Compare. SDXL trains at 1024 px (about 5 s a step "
                  "on a T4), Z-Image at 512 px (about 6 s a step) on the base model and is used on Turbo.") \
             .classes("t-small muted")
@@ -845,8 +845,8 @@ def page_compare(S, sheet):
                 except Exception as e:
                     ui.notify(str(e), type="warning")
 
-            ui.button("Make the grid", on_click=go).props("unelevated no-caps").classes("gen-btn w-full")
-        box = ui.element("div").classes("canvas grow")
+            ui.button("Make the grid", on_click=go).props("unelevated no-caps color=grey-3 text-color=grey-10").classes("gen-btn w-full")
+        box = ui.element("div").classes("canvas").style("flex:1 1 0; min-width:0")
 
     seen = {"m": None}
 
@@ -891,7 +891,7 @@ def page_library(S, sheet):
                 S["l_link"] = ""
                 ui.notify("Downloading. Progress is in the sidebar")
 
-            ui.button("Download", on_click=dl).props("unelevated no-caps").classes("gen-btn w-full")
+            ui.button("Download", on_click=dl).props("unelevated no-caps color=grey-3 text-color=grey-10").classes("gen-btn w-full")
 
             async def on_up(e):
                 d = UPLOADS / "library"
@@ -929,7 +929,7 @@ def page_library(S, sheet):
                     ui.button("Upload to repo", on_click=lambda: do_sync("push")).props("flat dense no-caps")
                     ui.button("Download from repo", on_click=lambda: do_sync("pull")).props("flat dense no-caps")
 
-        with ui.column().classes("grow gap-2"):
+        with ui.column().classes("gap-2").style("flex:1 1 0; min-width:0"):
             with ui.row().classes("w-full items-center"):
                 ui.label("On this VM").classes("t-head")
                 ui.space()
@@ -1012,7 +1012,7 @@ def page_history(S, sheet):
                             ui.label(str(v))
                     with ui.row().classes("gap-2 pt-2"):
                         ui.button("Make it again", on_click=lambda: (reuse(S, m), d.close(), ui.navigate.to("/"))) \
-                            .props("unelevated no-caps").classes("gen-btn")
+                            .props("unelevated no-caps color=grey-3 text-color=grey-10").classes("gen-btn")
                         ui.button("Download settings", on_click=lambda: ui.download.file(p.with_suffix(".json"))) \
                             .props("flat no-caps")
                         ui.button("Download image", on_click=lambda: ui.download.file(p)).props("flat no-caps")
