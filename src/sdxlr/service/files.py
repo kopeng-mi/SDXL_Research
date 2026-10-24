@@ -183,11 +183,12 @@ def _refresh() -> None:
     with _lock:
         _cache.update(history=his, prompts=prompts, loras=loras, models=models, zimage=zimage,
                       datasets=sorted(ds), ds=ds, caps=caps, cap_text=cap_text)
-    for p, _ in his[:30]:  # thumbs for the visible strip, made off the event loop
+    for p, _ in his[:30]:  # thumbs for the recent strip and History, made off the event loop
         try:
-            t = THUMBS / Path(p).relative_to(WORK).with_suffix(".320.jpg")
-            if not t.exists() or t.stat().st_mtime < Path(p).stat().st_mtime:
-                _make_thumb(Path(p), t, 320)
+            for size in (160, 320):
+                t = THUMBS / Path(p).relative_to(WORK).with_suffix(f".{size}.jpg")
+                if not t.exists() or t.stat().st_mtime < Path(p).stat().st_mtime:
+                    _make_thumb(Path(p), t, size)
         except Exception:
             pass
 
