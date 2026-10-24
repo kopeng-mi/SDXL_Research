@@ -161,6 +161,13 @@ def test_cancel_during_uninterruptible_load() -> None:
         assert gen(c) == "ok" and time.time() - t0 < 14
 
 
+def test_loras_reach_the_engine() -> None:
+    with client(SDXLR_FAKE_FAST="1") as c:
+        c.call("load", LOAD)
+        c.call("generate", {"job": {**JOB, "loras": [["/l/a.safetensors", 0.8], ["/l/off.safetensors", 0]]}, "meta": {}})
+        assert "/l/a.safetensors" in c.adapters and "/l/off.safetensors" not in c.adapters, c.adapters
+
+
 def test_worker_crash_then_restart() -> None:
     from sdxlr.engine.client import WorkerDied
     with client(SDXLR_FAKE_CRASH="1", SDXLR_FAKE_SCALE="0.1") as c:
