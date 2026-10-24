@@ -273,7 +273,14 @@ def page(S):
             ui.space()
 
             async def on_upload(e):
-                p = save_upload(await e.file.read(), e.file.name)
+                try:
+                    p = save_upload(await e.file.read(), e.file.name)
+                except ValueError as ex:
+                    ui.notify(str(ex), type="warning")
+                    return
+                except Exception as ex:
+                    ui.notify(err(ex), type="negative")
+                    return
                 S.update(image=p, src=p, boxes=[])
                 draw_canvas()
                 ui.notify("Image added. Pick what to do with it below", type="positive")

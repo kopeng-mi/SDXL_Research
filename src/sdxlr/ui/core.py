@@ -127,17 +127,26 @@ def logs_zip() -> Path:
     return out
 
 
+MAX_UPLOAD = 50 * 2**20  # Generate-page uploads; dataset photos go through their own importer
+
+
 def save_upload(data: bytes, name: str) -> str:
-    """An uploaded photo joins the outputs (and History) as a PNG, so the tools can work on it."""
+    """An uploaded photo joins the outputs (and History) as a PNG, so the tools can work on it.
+    The original file is never touched; generation works on a capped copy in the worker."""
     import io
+    if len(data) > MAX_UPLOAD:
+        raise ValueError(f"{name} is {len(data) / 2**20:.0f} MB; the limit is 50 MB. Export it smaller first.")
+    from PIL import ImageOps
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
+    if min(img.size) < 256:
+        raise ValueError(f"{name} is too small ({img.size[0]}x{img.size[1]} px); use one at least 256 px.")
     day = OUTPUTS / time.strftime("%Y-%m-%d")
     day.mkdir(parents=True, exist_ok=True)
     stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in Path(name).stem)[:40] or "image"
     p = day / f"{time.strftime('%H%M%S')}_upload_{stem}.png"
-    from PIL import ImageOps
-    ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB").save(p)
+    img.convert("RGB").save(p)
     history.save(p, {"uploaded": True, "name": name, "prompt_raw": "", "made": time.strftime("%Y-%m-%d %H:%M:%S"),
-                     "size": list(Image.open(p).size)})
+                     "size": list(img.size)})
     return str(p)
 
 
