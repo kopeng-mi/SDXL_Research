@@ -22,17 +22,21 @@ from .. import resources, settings
 from ..activity import log
 from ..paths import LOGS, RUN, WORK
 from ..engine.worker import oom_score
+from .jobs import stop_tree
 
 KILL_MB = 700  # MemAvailable under this: act before Colab kills the session (tune on T4)
 HEALTH_EVERY = 30.0
 RAM_OVERHEAD_GB = 1.6  # python + torch runtime + load-time working memory
 GB = 2**30
 
-EVENTS: list[str] = []  # notes for the UI to toast; drained by the frame's tick
+EVENTS: list[tuple[int, str]] = []  # (seq, note) for the UI to toast; each tab remembers the last seq it showed
+_seq = [0]
 
 
 def note(msg: str) -> None:
-    EVENTS.append(msg)
+    _seq[0] += 1
+    EVENTS.append((_seq[0], msg))
+    del EVENTS[:-20]
     log.info(f"guard: {msg}")
 
 
@@ -50,7 +54,7 @@ def mem_available_mb() -> float:
 
 # ---- load refusal ----
 def ram_need_gb(kind: str, sdxl_path: str | None, z_transformer: str | None, te_quant: str) -> float:
-    from ..paths import TE_GB, Z_MODELS
+    from ..paths import TE_GB, Z_MODELS, Z_SIZES_GB
 
     if kind == "Z-Image":
         p = None
@@ -63,9 +67,9 @@ def ram_need_gb(kind: str, sdxl_path: str | None, z_transformer: str | None, te_
         if p is not None:
             size = p.stat().st_size / GB
         else:  # not downloaded yet: the known sizes of the built-in GGUFs
-            size = 7.2 if "Q8" in z_transformer else 6.6 if "Q6" in z_transformer else \
-                5.6 if "Q5" in z_transformer else 5.0 if "Q4" in z_transformer else 7.2
-        return size + TE_GB.get(te_quant, 2.5) + RAM_OVERHEAD_GB
+            size = next((Z_SIZES_GB[k] for k, v in Z_MODELS.items() if v == z_transformer), 7.2)
+        # the nf4/int8 text encoder is quantized while it loads straight onto the GPU: only fp16 passes through RAM
+        return size + (TE_GB["fp16"] if te_quant == "fp16" else 0) + RAM_OVERHEAD_GB
     size = Path(sdxl_path).stat().st_size / GB if sdxl_path and Path(sdxl_path).exists() else resources.SDXL_GB
     return size + RAM_OVERHEAD_GB
 
@@ -89,7 +93,7 @@ def _kill_jobs_if_low(jm, mb: float) -> None:
     for j in list(jm.jobs.values()):
         if j.status == "running" and j.gpu and j.proc and j.proc.poll() is None:
             note(f"still only {mb:.0f} MB free: stopping the job \"{j.title}\" (auto resume keeps its progress)")
-            j.proc.terminate()
+            stop_tree(j.proc.pid)
             return
 
 
@@ -105,7 +109,7 @@ def _watch(engc, jm) -> None:
             tripped = time.time()
             note(f"low RAM ({mb:.0f} MB free): stopping the image engine so the session survives")
             try:
-                engc.kill()
+                engc.kill(reason="low RAM")
             except Exception as e:
                 log.info(f"guard: killing the engine failed: {e}")
             if mem_available_mb() < KILL_MB:
@@ -146,24 +150,28 @@ def _kill_stale_jobs() -> None:
         except psutil.Error:
             alive = False
         if alive:
-            try:
-                p.kill()
-                note(f"stopped a leftover job from an earlier app run (pid {pid})")
-            except psutil.Error:
-                pass
+            stop_tree(pid, grace=2.0)
+            note(f"stopped a leftover job from an earlier app run (pid {pid})")
         f.unlink(missing_ok=True)
 
 
 # ---- crash-log export ----
+_exported = [0.0]  # mtime cut-off: the next export copies only files changed since the last one
+
+
 def export_logs(reason: str) -> None:
     """Copy the logs off the VM when something dies: Drive if mounted, sync repo if set."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
+    since, _exported[0] = _exported[0], time.time()
+    fresh = [f for f in LOGS.rglob("*.log") if f.stat().st_mtime > since]
     drive = Path("/content/drive/MyDrive/sdxlr_logs")
     if drive.parent.exists():
         try:
             dest = drive / stamp
-            shutil.copytree(LOGS, dest, dirs_exist_ok=True)
-            log.info(f"guard: logs copied to Drive ({reason}): {dest}")
+            for f in fresh:
+                (dest / f.relative_to(LOGS)).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dest / f.relative_to(LOGS))
+            log.info(f"guard: {len(fresh)} log files copied to Drive ({reason}): {dest}")
         except Exception as e:
             log.info(f"guard: Drive log copy failed: {e}")
     repo = settings.get()["sync_repo"]
@@ -174,7 +182,7 @@ def export_logs(reason: str) -> None:
                 from huggingface_hub import HfApi
                 out = WORK / f"sdxlr_logs_{stamp}.zip"
                 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-                    for f in LOGS.rglob("*.log"):
+                    for f in fresh:
                         z.write(f, f.relative_to(LOGS))
                 HfApi().upload_file(path_or_fileobj=str(out), path_in_repo=f"logs/{stamp}.zip", repo_id=repo)
                 out.unlink(missing_ok=True)

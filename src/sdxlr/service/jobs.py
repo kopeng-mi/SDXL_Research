@@ -32,6 +32,36 @@ _STEP = re.compile(r"\[(\d+)/(\d+)\]")  # our scripts: "[3/5] file ..."
 gpu_lock = threading.Lock()  # keeps generation and GPU jobs apart (held across a whole generate)
 
 
+def stop_tree(pid: int, grace: float = 5.0) -> None:
+    """Stop a job and everything it started (kohya/musubi run under a wrapper):
+    terminate the whole tree, wait, then kill what is left."""
+    import psutil
+    try:
+        root = psutil.Process(pid)
+        procs = [root, *root.children(recursive=True)]  # list the children before the wrapper dies
+    except psutil.Error:
+        return
+    if os.name == "posix":  # leftovers that lost their parent keep the job's process group
+        have = {p.pid for p in procs}
+        for p in psutil.process_iter():
+            try:
+                if p.pid not in have and os.getpgid(p.pid) == pid:
+                    procs.append(p)
+            except (psutil.Error, OSError):
+                pass
+    for p in procs:
+        try:
+            p.terminate()
+        except psutil.Error:
+            pass
+    _, alive = psutil.wait_procs(procs, timeout=grace)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+
+
 @dataclass
 class JobInfo:
     id: str
@@ -103,7 +133,7 @@ class JobManager:
             job.status = "cancelled"
         elif job.status == "running" and job.proc:
             job.status = "cancelled"
-            job.proc.terminate()
+            threading.Thread(target=stop_tree, args=(job.proc.pid,), daemon=True).start()  # not on the event loop
 
     def gpu_busy(self) -> bool:
         return any(j.gpu and j.status == "running" for j in self.jobs.values())
@@ -137,7 +167,7 @@ class JobManager:
         pid_f = RUN / "jobs" / f"{job.id}.pid"
         try:
             job.proc = subprocess.Popen(job.cmd, cwd=REPO, env=env, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT)
+                                        stderr=subprocess.STDOUT, start_new_session=os.name == "posix")
             pid_f.parent.mkdir(parents=True, exist_ok=True)
             pid_f.write_text(str(job.proc.pid))
             from ..engine.worker import oom_score

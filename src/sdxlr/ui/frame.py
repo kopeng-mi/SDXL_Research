@@ -99,11 +99,14 @@ def root():
     seen["failed"].update(j.id for j in jm.jobs.values() if j.status == "failed")
     seen["done"].update(j.id for j in jm.jobs.values() if j.status == "done")
     prev = {"loaded": loaded_label()}
+    from ..service import guard
+    shown_note = [guard.EVENTS[-1][0] if guard.EVENTS else 0]  # this tab shows only notes newer than its start
 
     def side_tick():
-        from ..service import guard
-        while guard.EVENTS:  # watchdog notes become toasts wherever you are
-            ui.notify(guard.EVENTS.pop(0), type="warning", timeout=10000, close_button="Close")
+        for seq, msg in list(guard.EVENTS):  # watchdog notes become toasts in every open tab
+            if seq > shown_note[0]:
+                shown_note[0] = seq
+                ui.notify(msg, type="warning", timeout=10000, close_button="Close")
         t = busy_task()
         job = running_job()
         # model

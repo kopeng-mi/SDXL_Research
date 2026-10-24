@@ -77,10 +77,13 @@ def running_job():
 def before_gpu_job(job) -> None:
     """A caption/train/compare job needs the whole GPU: stop the engine worker
     for it (guaranteed free VRAM; the next Generate starts the worker again)."""
-    gpu_lock.acquire()  # waits for a running generation to finish
+    gpu_lock.acquire()  # waits for a running generation to finish; the job's end hook releases it
     if engc.loaded:
         log.info(f"[job {job.id}] stopping the image engine to free the GPU")
-    engc.kill()
+    try:
+        engc.kill()
+    except Exception as e:  # the job still runs and releases the lock at its end
+        log.info(f"[job {job.id}] stopping the image engine failed: {e}")
 
 
 def _prefetch(task, *args) -> None:
@@ -108,6 +111,8 @@ def _load(S, task) -> None:
     if is_loaded(S):
         return
     check_model(S)
+    if engc.needs_prefetch and engc.loaded:  # another model is in memory: it is dropped anyway, and its RAM would count against the check
+        engc.kill()
     if S["kind"] == "Z-Image":
         tr, te = z_path(S["z_model"]), Z_ENCODERS.get(S["z_te"], S["z_te"])
         from . import guard

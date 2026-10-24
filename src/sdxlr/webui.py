@@ -7,7 +7,7 @@ TS_AUTHKEY). The code lives in sdxlr/ui: core (state and work), theme (look and
 shared widgets), pages/ (one file per page) and frame (sidebar and startup).
 """
 
-from .ui.frame import main
-
 if __name__ == "__main__":
+    # imported here, not at the top: the engine worker is spawned and re-imports this module as __mp_main__
+    from .ui.frame import main
     main()
