@@ -12,6 +12,7 @@ from ... import presets
 from ...activity import Cancelled, act
 from ... import loraformat
 from ...service import files
+from ...service.gen import safe_update
 from ..core import (ASPECTS, MAX_UPLOAD, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, engc,
                     err, generate_blocking, is_loaded, load_blocking, lora_names, model_names, picked_label, reuse,
                     save_upload, task_is_loading, thumb, url, z_names)
@@ -78,6 +79,8 @@ async def do_generate(S, on_done=None):
 
 
 def page(S):
+    # callbacks of widgets built before their handlers exist; a toggle can fire while the page is built
+    hooks = {"kind": lambda: None, "mode": lambda: None}
     with ui.row().classes("w-full gap-8 no-wrap items-start two-col"):
         left = ui.column().classes("gap-4").style("width:500px; min-width:400px")
         right = ui.column().classes("gap-3").style("flex:1 1 0; min-width:0; position:sticky; top:12px")
@@ -86,7 +89,7 @@ def page(S):
     with left:
         with ui.column().classes("panel w-full gap-3"):
             with ui.row().classes("w-full items-center no-wrap gap-3"):
-                seg(["Z-Image", "SDXL"], S, "kind", on_change=lambda e: on_kind())
+                seg(["Z-Image", "SDXL"], S, "kind", on_change=lambda e: hooks["kind"]())
                 zsel = ui.select(z_names(), with_input=True, new_value_mode="add-unique").bind_value(S, "z_model") \
                     .props("outlined dense").classes("grow").bind_visibility_from(S, "kind", value="Z-Image")
                 ssel = ui.select(model_names(), with_input=True).bind_value(S, "sdxl_model") \
@@ -132,12 +135,18 @@ def page(S):
                     ui.menu_item(p[:90], on_click=lambda p=p: S.__setitem__("prompt", p))
 
         def fill_presets():
+            def load_preset(n):
+                missing = safe_update(S, presets.load(n))
+                draw_loras()
+                ui.notify(f"Preset {n} loaded")
+                if missing:
+                    ui.notify(f"Missing models (add them in Library): {', '.join(missing)}", type="warning")
+
             preset_menu.clear()
             with preset_menu:
                 names = presets.list_presets()
                 for n in names:
-                    ui.menu_item(f"Load preset: {n}", on_click=lambda n=n: (safe_update(S, presets.load(n)), draw_loras(),
-                                                                           ui.notify(f"Preset {n} loaded")))
+                    ui.menu_item(f"Load preset: {n}", on_click=lambda n=n: load_preset(n))
                 if names:
                     ui.separator()
                 ui.menu_item("Save the current settings…", on_click=save_preset)
@@ -338,7 +347,7 @@ def page(S):
         with banner:
             tool_l = ui.label().classes("t-small")
             seg({"area": "Change a part", "whole": "Change all", "extend": "Extend", "upscale": "Upscale"}, S, "tool",
-                on_change=lambda e: on_mode())
+                on_change=lambda e: hooks["mode"]())
             # painted part: tools, then sliders
             with ui.row().classes("w-full items-center gap-2") as area_tools:
                 seg({"move": "Move", "brush": "Brush", "eraser": "Eraser", "box": "Box"}, S, "ptool",
@@ -604,6 +613,8 @@ def page(S):
     def on_kind():
         if S["tool"] == "area":
             area_default()
+
+    hooks.update(kind=on_kind, mode=on_mode)
 
     PROMPT_HINT = {"area": "Now write in the prompt what the painted part should show (e.g. \"a red shirt\").",
                    "whole": "The prompt describes the whole new image; change it to steer the result.",
