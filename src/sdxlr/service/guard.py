@@ -24,7 +24,8 @@ from ..paths import LOGS, RUN, WORK
 from ..engine.worker import oom_score
 from .jobs import stop_tree
 
-KILL_MB = 700  # MemAvailable under this: act before Colab kills the session (tune on T4)
+KILL_MB = 1000  # MemAvailable under this: act first. T4: at 700 a fast RAM hog reached the kernel OOM killer first
+#                 (0.5 GB free); normal loads never went under 3.1 GB free
 HEALTH_EVERY = 30.0
 RAM_OVERHEAD_GB = 1.6  # python + torch runtime + load-time working memory
 GB = 2**30

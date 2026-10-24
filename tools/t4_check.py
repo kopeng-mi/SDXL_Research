@@ -161,7 +161,7 @@ def put_source(path: Path) -> str:
 # ---------- sections ----------
 def sec_loads(a) -> list[dict]:
     recs = []
-    for z in ("turbo Q8", "turbo Q6", "turbo Q4", "turbo 4-bit (unsloth)"):
+    for z in a.zmodels.split(","):
         engc.kill()  # clean peaks for every load
         S = base_state(z_model=z)
         recs.append(run(f"load {z}", load_blocking, S))
@@ -219,7 +219,8 @@ def _edits_for(src: str, kind: str, extra: dict, tag: str) -> list[dict]:
 
 def sec_edits(a) -> list[dict]:
     recs = []
-    imgs = sorted(p for p in Path(a.images).iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"))[:2]
+    imgs = sorted(p for p in Path(a.images).iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"))
+    imgs = imgs[:a.max_images]
     if not imgs:
         return [{"label": "edits", "ok": False, "error": f"no images in {a.images}"}]
     for i, p in enumerate(imgs):
@@ -345,6 +346,8 @@ def main() -> None:
     ap.add_argument("--sections", default="")
     ap.add_argument("--sdxl", default="")
     ap.add_argument("--loras", default="")
+    ap.add_argument("--zmodels", default="turbo Q8,turbo Q6,turbo Q4,turbo 4-bit (unsloth)")
+    ap.add_argument("--max-images", type=int, default=2)
     a = ap.parse_args()
     names = [s for s in a.sections.split(",") if s] or \
         [s for s in ("loads", "te", "edits", "big", "sdxl", "hog") if s != "sdxl" or a.sdxl]
