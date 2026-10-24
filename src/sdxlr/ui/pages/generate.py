@@ -365,6 +365,12 @@ def page(S):
                 ui.switch("Keep the original size").bind_value(S, "keep_size") \
                     .tooltip("The result is made at about 1 MP, then scaled back to the photo's size")
             whole_row.bind_visibility_from(S, "tool", backward=in_tools("whole"))
+            with ui.row().classes("items-center no-wrap gap-2") as blend_row:
+                ui.switch("Better blend (downloads 2 GB once)").bind_value(S, "better_blend")                     .bind_visibility_from(S, "kind", backward=lambda k: k == "Z-Image")                     .tooltip("Z-Image only: smoother joins where the new part meets the photo. A bit slower")
+            blend_row.bind_visibility_from(S, "tool", backward=in_tools("area", "extend"))
+            with ui.row().classes("items-center no-wrap gap-2") as tile_row:
+                ui.switch("Tile detail model (downloads 2 GB once)").bind_value(S, "tile_cn")                     .bind_visibility_from(S, "kind", backward=lambda k: k == "Z-Image")                     .tooltip("Z-Image only: adds detail that follows the photo more closely. A bit slower")
+            tile_row.bind_visibility_from(S, "tool", backward=in_tools("upscale"))
             with ui.column().classes("w-full gap-1") as extend_box:
                 extend_row = ui.row().classes("w-full items-end no-wrap gap-2")
 

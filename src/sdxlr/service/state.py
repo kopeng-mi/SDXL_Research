@@ -63,6 +63,8 @@ class State:
     feather: int = 12
     extend: list = field(default_factory=lambda: [0, 0, 0, 0])
     keep_size: bool = False
+    better_blend: bool = False  # painted edits through the Z-Image ControlNet lite inpaint (downloads ~2 GB once)
+    tile_cn: bool = False  # upscale tiles through the Tile ControlNet lite (downloads ~2 GB once)
     edit_count: int = 1
     compare_on: bool = True  # show the before/after slider on an edit result
     # dataset

@@ -56,6 +56,11 @@ Z_ENCODERS = {
     "unsloth": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit:text_encoder",
 }
 TE_GB = {"nf4": 2.5, "int8": 4.4, "fp16": 7.9, "prequant": 3.4}  # download size of the text encoder variants
+# ControlNet lite files (8 steps, ~1.9 GB each): "union" gives the better inpaint blend, "tile" refines upscale tiles
+CONTROLNETS = {
+    "union": ("alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1", "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors"),
+    "tile": ("alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1", "Z-Image-Turbo-Fun-Controlnet-Tile-2.1-lite-2601-8steps.safetensors"),
+}
 PREVIEW_VAES = {"zimage": "madebyollin/taef1", "sdxl": "madebyollin/taesdxl"}  # tiny VAEs for live previews
 
 

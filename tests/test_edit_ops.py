@@ -122,10 +122,10 @@ def test_empty_mask_and_blend_hook() -> None:
         assert "Nothing is painted" in str(e)
     ok = make_mask((640, 480), [[100, 100, 200, 200]], "m5.png")
     try:
-        run({"tool": "area", "mask": str(ok), "blend": "controlnet"}, src)
+        run({"tool": "area", "mask": str(ok), "blend": "nonsense"}, src)
         raise AssertionError("expected the blend hook to refuse")
     except ValueError as e:
-        assert "not available yet" in str(e)
+        assert "does not exist" in str(e)
 
 
 def test_extend() -> None:

@@ -221,7 +221,7 @@ def _edit_images(eng, args, step, check, status=None, label="", on_image=None):
             plan = edit.prepare(img, rm, multiple, feather_px=feather, fill=tool != "extend")
             check()
             job = _plain_job(j, seed + c, step, strength=1.0 if tool == "extend" else None)  # a new area is repainted fully
-            out = eng.inpaint_crop(job, plan.crop, plan.crop_mask)
+            out = eng.inpaint_crop(job, plan.crop, plan.crop_mask, blend=j.get("blend", "plain"))
             img = edit.paste_back(img, out, plan)
             check()
         outs.append(img)
@@ -236,8 +236,11 @@ def _op_generate(eng, args, status, step, check):
     t0 = time.time()
     j = args["job"]
     tool = j.get("tool")
-    if j.get("blend", "plain") != "plain":  # the ControlNet blend comes with the T4 work
-        raise UserError("That blend mode is not available yet. Use the plain one.")
+    blend = j.get("blend", "plain")
+    if blend not in ("plain", "controlnet"):
+        raise UserError("That blend mode does not exist. Use the plain one.")
+    if blend == "controlnet" and (eng.kind != "zimage" or tool not in ("area", "extend")):
+        raise UserError("The better blend works for painted edits and Extend with Z-Image only.")
     if tool in ("area", "extend"):
         paths = []
 
@@ -289,7 +292,9 @@ def _op_upscale(eng, args, status, step, check):
     t0 = time.time()
     job = _job_from(eng, args["job"], step)
     check()
-    big, seed, info = eng.upscale(job, float(args.get("scale", 2.0)), on_tile=step)
+    if args.get("tile_cn") and eng.kind != "zimage":
+        raise UserError("The tile detail model works with Z-Image only.")
+    big, seed, info = eng.upscale(job, float(args.get("scale", 2.0)), on_tile=step, tile_cn=bool(args.get("tile_cn")))
     t1 = time.time()
     meta = {**(args.get("meta") or {}), "seconds": round(t1 - t0, 1)}
     paths = save_images([big], meta, seed)

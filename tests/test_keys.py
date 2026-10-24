@@ -63,6 +63,19 @@ def test_prequantized_encoder() -> None:
     assert not te_prequantized(Z_ENCODERS["abliterated"])
 
 
+def test_controlnet_lite_config() -> None:
+    """The shipped config matches what the lite headers contain (read from Hugging Face on 2026-10: Union and Tile
+    lite have control_layers 0-2, control_noise_refiner 0-1, control_all_x_embedder.2-1.weight [3840, 132])."""
+    cfg = json.loads((Path(__file__).resolve().parents[1] / "src/sdxlr/engine/zcn_lite/config.json").read_text())
+    assert len(cfg["control_layers_places"]) == 3 and cfg["control_layers_places"][0] == 0
+    assert len(cfg["control_refiner_layers_places"]) == 2 and cfg["n_refiner_layers"] == 2
+    assert cfg["add_control_noise_refiner"] == "control_noise_refiner"
+    assert cfg["control_in_dim"] * 2 * 2 * 1 == 132, "patch 2x2, f_patch 1"
+    assert cfg["all_patch_size"] == [2] and cfg["all_f_patch_size"] == [1] and cfg["dim"] == 3840
+    from sdxlr.paths import CONTROLNETS
+    assert set(CONTROLNETS) == {"union", "tile"} and all("lite" in f and f.endswith(".safetensors") for _, f in CONTROLNETS.values())
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in [(k, v) for k, v in list(globals().items()) if k.startswith("test_")]:

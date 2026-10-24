@@ -214,7 +214,8 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
             # image-to-image runs only steps x strength of the schedule: keep at least 4 real steps
             steps = max(int(steps), math.ceil(4 / max(strength, 0.05)))
         job = {"prompt": full, "negative": neg, "steps": int(steps), "cfg": float(cfg), "sampler": sampler,
-               "width": w, "height": h, "seed": int(S["seed"]), "count": count, "tool": tool, "blend": "plain",
+               "width": w, "height": h, "seed": int(S["seed"]), "count": count, "tool": tool,
+               "blend": "controlnet" if S["better_blend"] and tool in ("area", "extend") and kind == "zimage" else "plain",
                "feather": int(S["feather"]), "keep_size": bool(S["keep_size"]),
                "extend": [max(0.0, min(100.0, float(x or 0))) for x in S["extend"]] if tool == "extend" else None,
                "mask": str(masks.path_for(S["mask_id"])) if tool == "area" else None,
@@ -229,9 +230,12 @@ def generate_blocking(S, task) -> tuple[list[str], str, int]:
                 "strength": float(strength), "scale": S["up_scale"] if tool == "upscale" else None,
                 "feather": int(S["feather"]) if tool == "area" else None,
                 "extend": job["extend"], "keep_size": bool(S["keep_size"]) if tool == "whole" else None}
+        use_tile_cn = tool == "upscale" and S["tile_cn"] and kind == "zimage"
+        if (job["blend"] == "controlnet" or use_tile_cn) and engc.needs_prefetch:
+            _prefetch(task, "prefetch-controlnet", "tile" if use_tile_cn else "union")  # ~2 GB, once
         if tool == "upscale":
             task.set_stage(f"Upscaling {S['up_scale']:g}x")
-            r = engc.call("upscale", {"job": job, "scale": float(S["up_scale"]), "meta": meta}, task)
+            r = engc.call("upscale", {"job": job, "scale": float(S["up_scale"]), "meta": meta, "tile_cn": use_tile_cn}, task)
         else:
             task.set_stage({"area": "Changing the painted part", "whole": "Changing the image",
                             "extend": "Extending the image"}.get(tool, "Generating"))

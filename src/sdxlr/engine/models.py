@@ -22,6 +22,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import re
+import sys
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -31,7 +32,7 @@ from typing import Callable
 import torch
 from PIL import Image
 
-from ..paths import FP16_VAE, PREVIEWS, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, te_prequantized, z_key
+from ..paths import CONTROLNETS, FP16_VAE, MODELS, PREVIEWS, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, te_prequantized, z_key
 from .keys import needs_tiling, reuse_plan, z_embed_key
 from .. import loraformat
 from ..prompt import encode_sdxl
@@ -125,10 +126,14 @@ class Engine:
         self._inpaint = None
         self._img2img = None
         self._prev = None  # live preview decoder (engine/preview.py), made on first use
+        self._cn = None  # (name, ZImageControlNetModel): one ControlNet in VRAM at a time
+        self._cn_pipes: dict = {}
 
     # ---- model ----
     def unload(self) -> None:
         self.pipe = self._inpaint = self._img2img = None
+        self._cn = None
+        self._cn_pipes = {}
         self.kind = self.model_path = self._sampler = None
         self.adapters.clear()
         self.adapter_mb.clear()
@@ -331,6 +336,66 @@ class Engine:
             out["negative_prompt_embeds"] = [ne] * count
         return out
 
+    # ---- ControlNet lite (GPU, untested; see engine/zcontrol.py) ----
+    def _cn_pipe(self, name: str, zero_calls: tuple):
+        """The control pipeline for "union" (better inpaint blend) or "tile" (upscale tiles). Loads the ControlNet on first
+        use (a few seconds, ~2 GB VRAM), keeps one at a time, and refuses cleanly when the GPU has no room for it."""
+        from . import zcontrol
+        if self._cn is None or self._cn[0] != name:
+            self._cn, self._cn_pipes = None, {}
+            gc.collect()
+            torch.cuda.empty_cache()
+            path = MODELS / "zimage_cn" / CONTROLNETS[name][1]
+            if not path.exists():
+                raise RuntimeError("The ControlNet file is not downloaded yet. Turn the option off and on again to fetch it.")
+            free0 = torch.cuda.mem_get_info()[0]
+            cn = zcontrol.load_controlnet(str(path)).to("cuda")
+            free1 = torch.cuda.mem_get_info()[0]
+            print(f"engine worker: ControlNet {name} loaded, VRAM free {free0 / 2**30:.1f} -> {free1 / 2**30:.1f} GB, "
+                  f"{ram()}", file=sys.stderr, flush=True)
+            if free1 < 0.8 * 2**30:  # no room left for activations: give it back instead of failing mid-image
+                del cn
+                gc.collect()
+                torch.cuda.empty_cache()
+                raise RuntimeError("Not enough GPU memory for this option next to the loaded model. Use the plain version.")
+            self._cn = (name, cn)
+        key = (name, zero_calls)
+        if key not in self._cn_pipes:
+            self._cn_pipes[key] = zcontrol.make_pipeline(self.pipe, self._cn[1], zero_calls)
+        torch.cuda.reset_peak_memory_stats()
+        return self._cn_pipes[key]
+
+    def _log_peak(self, what: str) -> None:
+        print(f"engine worker: {what}: peak VRAM {torch.cuda.max_memory_allocated() / 2**30:.1f} GB, {ram()}",
+              file=sys.stderr, flush=True)
+
+    def _inpaint_cn(self, job: Job, img: Image.Image, m: Image.Image) -> Image.Image:
+        """Painted edit with the ControlNet lite inpaint inputs (8 steps, scale 0.9): a better blend than plain inpaint."""
+        pipe = self._cn_pipe("union", (1,))  # the control latents are zeros: no pose or depth hint
+        w, h = (img.width // 16) * 16, (img.height // 16) * 16
+        if (w, h) != img.size:
+            img = img.resize((w, h))
+        self.set_loras(job.loras)
+        gen = torch.Generator("cpu").manual_seed(job.seed if job.seed >= 0 else 0)
+        with torch.no_grad():
+            out = pipe(height=h, width=w, image=img, mask_image=m.resize((w, h)), control_image=img,
+                       num_inference_steps=8, guidance_scale=job.cfg if job.cfg > 1 else 0.0,
+                       controlnet_conditioning_scale=0.9, generator=gen,
+                       **self._z_embeds(job, 1), **_step_cb(job)).images[0]
+        self._log_peak("ControlNet inpaint")
+        return out
+
+    def _tile_cn(self, job: Job, tile: Image.Image, seed: int) -> Image.Image:
+        """Refine one upscale tile with the Tile ControlNet lite (8 steps, scale 0.8); the whole tile is the control image."""
+        pipe = self._cn_pipe("tile", (2,))  # all-white mask, zero masked-image latents
+        w, h = (tile.width // 16) * 16, (tile.height // 16) * 16
+        tile = tile.convert("RGB").resize((w, h))
+        gen = torch.Generator("cpu").manual_seed(seed)
+        with torch.no_grad():
+            return pipe(height=h, width=w, image=tile, mask_image=Image.new("L", (w, h), 255), control_image=tile,
+                        num_inference_steps=8, guidance_scale=job.cfg if job.cfg > 1 else 0.0,
+                        controlnet_conditioning_scale=0.8, generator=gen, **self._z_embeds(job, 1)).images[0]
+
     def make_preview(self, latents, path, done) -> None:
         """Save a live preview of these latents to `path` (cheap, skipped while the last one is being written)."""
         from .preview import Previewer
@@ -432,7 +497,7 @@ class Engine:
         torch.cuda.empty_cache()  # give back the activations' memory between images
         return images, seed, info
 
-    def inpaint_crop(self, job: Job, crop: Image.Image, mask: Image.Image) -> Image.Image:
+    def inpaint_crop(self, job: Job, crop: Image.Image, mask: Image.Image, blend: str = "plain") -> Image.Image:
         """Inpaint one prepared crop (crop-and-stitch): the crop is ~1 MP and multiple-aligned,
         the mask is already grown; blending back is the caller's (edit.paste_back) job."""
         if self.pipe is None:
@@ -440,6 +505,10 @@ class Engine:
         img = crop.convert("RGB")
         m = mask.convert("L")
         gen = torch.Generator("cpu").manual_seed(job.seed if job.seed >= 0 else 0)
+        if blend == "controlnet":
+            if self.kind != "zimage":
+                raise RuntimeError("The better blend is for Z-Image only.")
+            return self._inpaint_cn(job, img, m)
         if self.kind == "zimage":
             if self._inpaint is None:
                 from diffusers import ZImageInpaintPipeline
@@ -468,7 +537,7 @@ class Engine:
                              guidance_scale=job.cfg, generator=gen, **emb, **_step_cb(job)).images[0]
 
     def upscale(self, job: Job, scale: float = 2.0, tile: int = 1024, overlap: int = 128,
-                on_tile=None) -> tuple[Image.Image, int, str]:
+                on_tile=None, tile_cn: bool = False) -> tuple[Image.Image, int, str]:
         """Enlarge job.image by `scale`, then refine overlapping tiles with image-to-image (job.prompt,
         job.strength) and blend them with feathered edges. on_tile(done, total) reports progress."""
         import numpy as np
@@ -495,7 +564,8 @@ class Engine:
         for i, (x0, y0, x1, y1) in enumerate(boxes):
             sub = Job(**{**job.__dict__, "image": big.crop((x0, y0, x1, y1)), "mask": None, "count": 1,
                          "seed": seed, "on_step": None, "on_preview": None})
-            out = self._run(sub, seed)[0].resize((x1 - x0, y1 - y0), Image.LANCZOS)
+            piece = self._tile_cn(sub, sub.image, seed) if tile_cn and self.kind == "zimage" else self._run(sub, seed)[0]
+            out = piece.resize((x1 - x0, y1 - y0), Image.LANCZOS)
             # weight falls off linearly over the overlap, so seams blend
             wx = np.minimum(np.arange(x1 - x0) + 1, np.arange(x1 - x0)[::-1] + 1).clip(max=overlap) / overlap
             wy = np.minimum(np.arange(y1 - y0) + 1, np.arange(y1 - y0)[::-1] + 1).clip(max=overlap) / overlap

@@ -155,15 +155,15 @@ class Engine:
         images = [_img(w, h, f"{job.prompt[:60]} | fake") for _ in range(max(1, job.count))]
         return images, seed, f"{time.time() - t0:.1f}s | fake | seed {seed}"
 
-    def inpaint_crop(self, job: Job, crop: Image.Image, mask: Image.Image) -> Image.Image:
+    def inpaint_crop(self, job: Job, crop: Image.Image, mask: Image.Image, blend: str = "plain") -> Image.Image:
         if self.pipe is None:
             raise RuntimeError("no model loaded")
         self._use(job.loras)
         self._steps(max(1, int(job.steps)), job.on_step, secs=4.0, on_preview=job.on_preview)
-        return _img(crop.width, crop.height, "edit fake")
+        return _img(crop.width, crop.height, "edit fake" + (" (better blend)" if blend == "controlnet" else ""))
 
     def upscale(self, job: Job, scale: float = 2.0, tile: int = 1024, overlap: int = 128,
-                on_tile=None) -> tuple[Image.Image, int, str]:
+                on_tile=None, tile_cn: bool = False) -> tuple[Image.Image, int, str]:
         if self.pipe is None:
             raise RuntimeError("no model loaded")
         t0 = time.time()
@@ -172,4 +172,4 @@ class Engine:
         tiles = max(1, (w // tile + 1) * (h // tile + 1))
         self._steps(tiles, on_tile, secs=8.0)
         seed = job.seed if job.seed >= 0 else random.randrange(2**31 - 1)
-        return _img(w, h, f"upscale {scale:g}x | fake"), seed, f"{time.time() - t0:.1f}s | {w}x{h} fake | seed {seed}"
+        return _img(w, h, f"upscale {scale:g}x | fake" + (" tile CN" if tile_cn else "")), seed, f"{time.time() - t0:.1f}s | {w}x{h} fake | seed {seed}"

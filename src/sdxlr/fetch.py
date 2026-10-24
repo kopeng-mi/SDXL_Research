@@ -105,6 +105,12 @@ def prefetch_sdxl() -> None:
     print("fp16 VAE ready", flush=True)
 
 
+def prefetch_controlnet(name: str) -> None:
+    from .paths import CONTROLNETS
+    repo, fname = CONTROLNETS[name]
+    print(f"controlnet: {fetch(f'{repo}/{fname}', MODELS / 'zimage_cn')}", flush=True)
+
+
 def prefetch_preview(kind: str) -> None:
     from huggingface_hub import snapshot_download
 
@@ -133,6 +139,9 @@ if __name__ == "__main__":
     kind, *srcs = sys.argv[1:]
     if kind == "prefetch-zimage":
         prefetch_zimage(*srcs)
+        sys.exit()
+    if kind == "prefetch-controlnet":
+        prefetch_controlnet(*srcs)
         sys.exit()
     if kind == "prefetch-preview":
         prefetch_preview(*srcs)
