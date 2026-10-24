@@ -191,6 +191,36 @@ def test_cancel_keeps_finished_variations() -> None:
     assert res.get("r") == "Cancelled" and len(made) >= 1, (res, made)
 
 
+def _upscale(source: Path, scale: float) -> dict:
+    c = client_mod.EngineClient()
+    try:
+        c.call("load", {"kind": "sdxl", "path": "/m/a.safetensors"})
+        im = Image.open(source)
+        job = {"prompt": "x", "steps": 10, "cfg": 5, "seed": 5, "count": 1, "image": str(source),
+               "width": im.width, "height": im.height, "strength": 0.3}
+        return c.call("upscale", {"job": job, "scale": scale, "meta": {}})
+    finally:
+        c.kill()
+
+
+def test_upscale_scales_the_image_not_the_work_copy() -> None:
+    src = make_source(1600, 1200)  # 1.9 MP: over the 1.2 MP work-copy cap
+    r = _upscale(src, 1.5)
+    assert tuple(r["size"]) == (2400, 1800), r["size"]
+    r = _upscale(src, 2.0)  # 3200x2400 = 7.7 MP: under the 8 MP cap
+    assert tuple(r["size"]) == (3200, 2400), r["size"]
+
+
+def test_upscale_refuses_an_image_already_at_the_cap() -> None:
+    src = make_source(3600, 2400)  # 8.6 MP
+    try:
+        _upscale(src, 2.0)
+    except ValueError as e:
+        assert "already" in str(e), e
+    else:
+        raise AssertionError("an 8.6 MP image was upscaled")
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in [(k, v) for k, v in list(globals().items()) if k.startswith("test_")]:

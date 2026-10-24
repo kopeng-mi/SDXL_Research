@@ -168,7 +168,8 @@ class Engine:
             raise RuntimeError("no model loaded")
         t0 = time.time()
         self._use(job.loras)
-        w, h = int(job.image.width * scale), int(job.image.height * scale)
+        from .edit import cap_size
+        w, h = cap_size(int(job.image.width * scale), int(job.image.height * scale))  # same 8 MP cap as the engine
         tiles = max(1, (w // tile + 1) * (h // tile + 1))
         self._steps(tiles, on_tile, secs=8.0)
         seed = job.seed if job.seed >= 0 else random.randrange(2**31 - 1)

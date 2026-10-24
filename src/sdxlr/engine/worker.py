@@ -289,8 +289,16 @@ def _op_generate(eng, args, status, step, check):
 
 
 def _op_upscale(eng, args, status, step, check):
+    from . import edit
     t0 = time.time()
-    job = _job_from(eng, args["job"], step)
+    j = args["job"]
+    job = _job_from(eng, {**j, "image": None}, step)
+    # the scale applies to the image itself, not to the 1.2 MP work copy the other tools use; the engine caps the output
+    job.image = edit.load_source(j["image"])
+    job.width, job.height = job.image.size
+    if job.width * job.height >= 0.95 * edit.MAX_OUT_MP * 1e6:
+        raise UserError(f"This image is already {job.width}x{job.height}; upscaling stops at about "
+                        f"{edit.MAX_OUT_MP:g} MP, so there is nothing to gain.")
     check()
     if args.get("tile_cn") and eng.kind != "zimage":
         raise UserError("The tile detail model works with Z-Image only.")

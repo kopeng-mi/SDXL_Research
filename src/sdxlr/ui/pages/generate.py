@@ -83,7 +83,7 @@ def page(S):
     with left:
         with ui.column().classes("panel w-full gap-3"):
             with ui.row().classes("w-full items-center no-wrap gap-3"):
-                seg(["Z-Image", "SDXL"], S, "kind")
+                seg(["Z-Image", "SDXL"], S, "kind", on_change=lambda e: on_kind())
                 zsel = ui.select(z_names(), with_input=True, new_value_mode="add-unique").bind_value(S, "z_model") \
                     .props("outlined dense").classes("grow").bind_visibility_from(S, "kind", value="Z-Image")
                 ssel = ui.select(model_names(), with_input=True).bind_value(S, "sdxl_model") \
@@ -333,7 +333,8 @@ def page(S):
         banner = ui.column().classes("banner w-full gap-2")
         with banner:
             tool_l = ui.label().classes("t-small")
-            seg({"area": "Painted part", "whole": "Whole image", "extend": "Extend", "upscale": "Upscale"}, S, "tool")
+            seg({"area": "Painted part", "whole": "Whole image", "extend": "Extend", "upscale": "Upscale"}, S, "tool",
+                on_change=lambda e: on_mode())
             # painted part: tools, then sliders
             with ui.row().classes("w-full items-center gap-2") as area_tools:
                 seg({"move": "Move", "brush": "Brush", "eraser": "Eraser", "box": "Box"}, S, "ptool",
@@ -558,7 +559,7 @@ def page(S):
 
     def draw_recent():
         items = files.items(12)
-        sig = [str(p) for p, _ in items] + [shown_img()]
+        sig = [(str(p), files.thumb_ready(p, 160)) for p, _ in items] + [shown_img()]  # redraw when a thumb appears
         if sig == shown["recent"]:
             return
         shown["recent"] = sig
@@ -574,6 +575,18 @@ def page(S):
         if S["tool"]:
             S["src"] = p  # the open tool now works on this image
         draw_canvas()
+
+    def on_mode():
+        """A mode tab while a result is shown: the next edit works on that result (what the user sees)."""
+        if reviewing():
+            S["src"] = S["image"]
+            pending["result"] = None
+        draw_canvas()
+
+    def on_kind():
+        """Painted mode keeps the per-model strength default unless the user moved the slider."""
+        if S["tool"] == "area" and S["strength"] in (0.85, 0.75):
+            S["strength"] = 0.85 if S["kind"] == "Z-Image" else 0.75
 
     def set_tool(tool):
         if tool and not S["image"]:

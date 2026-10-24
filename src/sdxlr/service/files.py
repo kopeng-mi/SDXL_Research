@@ -200,6 +200,11 @@ def view_url(p) -> str | None:
     return display_url(p)
 
 
+def thumb_ready(p, size: int = 320) -> bool:
+    """True once this thumb exists (a memory check, safe in a timer)."""
+    return (str(p), size) in _ready
+
+
 def display_ready(p) -> bool:
     """True once the display copy exists (a memory check, safe in a timer)."""
     return (str(p), DISPLAY) in _ready
