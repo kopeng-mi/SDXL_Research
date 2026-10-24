@@ -436,7 +436,7 @@ def page(S):
 
             up = ui.upload(auto_upload=True, on_upload=on_upload, max_files=1, max_file_size=MAX_UPLOAD,
                            on_rejected=lambda: ui.notify("That file is over 50 MB. Export it smaller first.", type="warning")) \
-                .props("accept=image/* hide-upload-btn").style("display:none")
+                .props("accept=image/*,.heic,.heif hide-upload-btn").style("display:none")
             up_btn = button("Upload", lambda: up.run_method("pickFiles"), icon="upload").tooltip("Upload a photo to edit")
         with ui.row().classes("w-full items-center gap-2") as actions:
             reuse_b = button("Reuse", lambda: reuse_shown(), icon="settings_backup_restore").tooltip("Fill the form with the settings of this image")

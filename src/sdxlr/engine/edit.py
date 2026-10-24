@@ -31,6 +31,14 @@ MAX_OUT_MP = 8.0  # outpaint and upscale output cap
 
 
 # ---------- sources ----------
+try:  # iPhone HEIC/HEIF photos (pillow-heif is in the Colab venv; without it they get a plain message)
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    HEIC = True
+except ImportError:
+    HEIC = False
+
+
 def load_source(path: str | Path) -> Image.Image:
     """RGB, EXIF-rotated, alpha composited on white, first frame of animations."""
     img = Image.open(path)

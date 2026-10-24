@@ -69,15 +69,24 @@ def _copy_tree(src: Path, dest: Path, seen: dict[str, str]) -> tuple[int, int, i
     n_img = n_txt = n_dup = 0
     files = [src] if src.is_file() else sorted(p for p in src.rglob("*") if p.is_file())
     for p in files:
-        if p.name.startswith(".") or "__MACOSX" in p.parts or p.suffix.lower() not in IMG:
+        heic = p.suffix.lower() in (".heic", ".heif")
+        if p.name.startswith(".") or "__MACOSX" in p.parts or not (p.suffix.lower() in IMG or heic):
             continue
         h = _digest(p)
         if h in seen:  # the same photo twice teaches the LoRA that one photo twice as hard
             n_dup += 1
             print(f"skipped {p.name}: same photo as {seen[h]}", flush=True)
             continue
-        name = _free_name(dest, p.name)
-        shutil.copy2(p, dest / name)
+        if heic:  # the trainers read JPEG/PNG only: convert iPhone photos on the way in
+            from .engine.edit import HEIC, load_source
+            if not HEIC:
+                print(f"skipped {p.name}: HEIC needs pillow-heif (export it as JPEG)", flush=True)
+                continue
+            name = _free_name(dest, p.with_suffix(".jpg").name)
+            load_source(p).save(dest / name, quality=95)
+        else:
+            name = _free_name(dest, p.name)
+            shutil.copy2(p, dest / name)
         seen[h] = name
         n_img += 1
         cap = p.with_suffix(".txt")

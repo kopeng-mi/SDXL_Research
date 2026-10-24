@@ -85,7 +85,9 @@ def save_upload(data: bytes, name: str) -> str:
     try:
         img = load_source(io.BytesIO(data))
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError):
-        raise ValueError(f"{name} is not an image this app can read (JPEG, PNG, WebP). HEIC: export as JPEG first.") from None
+        from ..engine.edit import HEIC
+        kinds = "JPEG, PNG, WebP, HEIC" if HEIC else "JPEG, PNG, WebP; HEIC: export as JPEG first"
+        raise ValueError(f"{name} is not an image this app can read ({kinds}).") from None
     if min(img.size) < 256:
         raise ValueError(f"{name} is too small ({img.size[0]}x{img.size[1]} px); use one at least 256 px.")
     day = OUTPUTS / time.strftime("%Y-%m-%d")
