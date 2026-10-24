@@ -8,7 +8,7 @@ measured T4 numbers, bugs fixed, UI design).
 | Item | Location |
 |---|---|
 | Repo | `kopeng-mi/SDXL_Research` (public; code only, no personal data) |
-| Work branch | `step1-scaffold` (all work, pushed). `main` = first commit only; merge after the T4 UI pass |
+| Work branch | `step2-polish` (on top of `step1-scaffold`, pushed). `main` = first commit only; merge after the user's Colab web test |
 | Local clone | `C:\Users\raman\Documents\MyGit\temps\SDXL_Research` |
 | Old reference notebooks | same folder, git-ignored (personal data), kept locally |
 | Test scripts (not in repo) | `C:\Users\raman\Documents\MyGit\temps\colab_tests\` |
@@ -31,6 +31,9 @@ measured T4 numbers, bugs fixed, UI design).
 | `compare.py` | LoRA x strength grid, mixes, resume-safe |
 | `data.py` / `fetch.py` | dataset import (zip/images/URL/HF/Drive, captions optional); model/LoRA downloads incl. Civitai |
 | `presets.py` / `settings.py` / `modes.py` | JSON presets + HF sync; UI-set repo names; modes, aspects, styles, training ETA |
+| `resources.py` | header bars (VRAM/RAM/disk by named block), load estimate, clear download cache |
+| `session.py` | 4-digit session codes, UI state in `/content/work/sessions/` |
+| `hfsync.py` | auto resume: dataset + latest LoRA/state in the private HF repo, older checkpoint removed |
 
 Notebook = `cells/00_setup.py` + `cells/10_launch.py`, built into `notebook.ipynb`
 by `python tools/build_notebook.py` (edit cells, never the .ipynb).
@@ -47,20 +50,12 @@ auto-refresh; caption editor; Library download; preset save/load.
 
 ## Open items (in order)
 
-1. **Pending question to the user (Q17):** run a T4 pass of the UI's GPU paths
-   now (Load both model types, generate in Quality/Speed/Fast, inpaint, short
-   train + caption + compare from the UI, measure SDXL Fast mode), or let the
-   user test from Colab web.
-2. SDXL Fast mode uses the SDXL-Lightning 8-step LoRA: speed/quality unmeasured;
-   may look worse on Pony/fine-tunes.
-3. Z-Image identity learning unproven: the 30-step test LoRA was too weak to
-   change output. Needs a real run on the user's dataset (512 px, ~5 epochs x
-   2 repeats fits one session; ETA shown in the Train tab).
-4. Z-Image training has no resume across sessions yet (SDXL has HF resume).
-5. 768 px Z-Image training untested (estimate only).
-6. More captioners (e.g. WD tagger) were requested ("many captioner support").
-7. Optional: Setup "prefetch" of usual models to save time each session.
-8. Merge `step1-scaffold` into `main` (no squash) after the T4 pass; setup cell
+1. User tests from Colab web: Z-Image identity run on their photos with auto
+   resume (HF_TOKEN in Colab Secrets). Auto resume and HF dataset sync are
+   untested (no token on the agent's VM).
+2. 768 px Z-Image training untested (estimate only).
+3. Optional: Setup "prefetch" of usual models.
+4. Merge `step2-polish` into `main` (no squash) after that test; setup cell
    default branch is `main`.
 
 ## Testing workflow (agent notes)
@@ -68,6 +63,9 @@ auto-refresh; caption editor; Library download; preset save/load.
 - Colab CLI: `colab new -s <name> [--gpu T4]`, `colab upload/download`,
   `colab console -s <name>`, `colab stop`. Free account: T4 ~5 h, use the CPU VM
   for anything that does not need a GPU, stop sessions when done.
+- Your router's DNS sometimes refuses new VM hostnames ("getaddrinfo failed"):
+  stop the session and create a new one. Run `colab exec` with
+  `PYTHONIOENCODING=utf-8` or it crashes printing progress bars.
 - `colab exec` drops long cells (10 s read timeout): start long jobs detached on
   the VM (`{ nohup bash -c "..." > /content/logs/x.log 2>&1 & }`) and poll.
 - Drive the VM through `colab console` in the Herdr side pane (`wK:pE`). That

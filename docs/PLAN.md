@@ -55,6 +55,9 @@ diffusers/transformers/accelerate, so everything shares one venv.
 | Z-Image seed variety | low (turbo trait): two seeds look almost the same |
 | Z-Image LoRA training (musubi) | base DiT, fp16 + fp8 weight storage, 512 px, batch 1: **~5.7 s/step**, peak 13.9 GB VRAM, 9.8 GB RAM; 1024 px expected to OOM |
 | Z-Image Turbo in the engine | 768x1024, 9 steps: ~30 s/image; first load ~9 min (downloads) |
+| UI pass, SDXL base 896x1152 | Speed (20 steps) 18 s, Quality (30) 25 s, **Fast (Lightning 8) 10 s**, inpaint 16 s |
+| UI pass, Z-Image Q8 896x1152 | Fast (6) 28 s, Speed (9) 41 s, Quality (12) 54 s, inpaint 34 s; VRAM shows 14.5 GB (mostly CUDA cache) |
+| WD EVA02 v3 tagger | works on T4; tags like "dog, tongue out, orange background" |
 
 ## Bugs found and fixed
 
@@ -112,13 +115,23 @@ dataset import as a job with auto-refresh, caption editor, Library download,
 JSON presets save/load. GPU paths in the UI (Load, Generate, Train, Compare,
 Caption) still need a T4 pass.
 
+Branch `step2-polish` (T4 UI pass done: every GPU path works from the app's
+handlers; header bars, load preview and session restore checked in a browser):
+- Library: HF `blob/`/`resolve/` links, private repos (HF_TOKEN), uploads,
+  custom Z-Image checkpoints (shown in the model pickers)
+- simpler tabs (extras under Advanced); Generate loads the picked model itself
+- WD tagger captioner (timm)
+- header bars: VRAM/RAM/disk split into named blocks; hatched preview of a
+  picked model (red if it won't fit); "Clear download cache" in Library
+- 4-digit session code: UI state saved on the VM every 5 s and after each
+  generation; reload restores it, the code restores it in another browser
+- auto resume (both trainers): HF repo keeps only `NAME/ckpt/` (latest LoRA +
+  state, replaced each push) and `NAME/dataset/`; same name later = continue
+
 Next:
-1. T4 pass of the UI's GPU paths; measure SDXL Fast mode (Lightning LoRA)
-2. Confirm Z-Image LoRA effect on Turbo with a real run; try 768 px training
-2. New UI (tabs above) on top of JobManager
-3. Fast mode for SDXL (Lightning/Hyper LoRA), measure speeds
-4. More captioners (e.g. WD tagger for tag-style captions)
-5. Test the whole flow from Colab web, then merge to `main`
+1. User test from Colab web: Z-Image identity run with auto resume (needs HF_TOKEN; untested here)
+2. 768 px Z-Image training
+3. Merge `step2-polish` into `main`
 
 ## Testing notes (for the agent)
 
