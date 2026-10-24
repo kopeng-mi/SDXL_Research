@@ -142,6 +142,19 @@ def test_outpaint_canvas() -> None:
     assert arr(m2).max() == 0, "nothing to repaint when no side is extended"
 
 
+def test_outpaint_keeps_the_original() -> None:
+    img = Image.fromarray(np.random.default_rng(1).integers(0, 256, (200, 300, 3), dtype=np.uint8), "RGB")
+    canvas, mask = edit.outpaint_canvas(img, (0, 25, 0, 25), 8)  # top, right, bottom, left
+    ox = (canvas.width - 300) // 2
+    assert (arr(canvas)[:, ox:ox + 300] == arr(img)).all(), "the original is pasted last, without filler noise"
+    m = arr(mask)
+    assert m[100, ox + 150] == 0 and m[100, ox + 10] == 255  # kept inside, repainted in the band
+    assert m[5, ox + 150] == 0, "no band on the sides that got no new space"
+    # the kept original is a hole in the mask: prepare must not fill it
+    plan = edit.prepare(canvas, mask, 8, fill=False)
+    assert arr(plan.crop_mask)[plan.crop_mask.height // 2, plan.crop_mask.width // 2] == 0
+
+
 def test_cap_size() -> None:
     assert edit.cap_size(6000, 4000) == (5656, 3771) or edit.cap_size(6000, 4000)[0] * edit.cap_size(6000, 4000)[1] <= 8_000_000
     assert edit.cap_size(1000, 1000) == (1000, 1000)

@@ -34,6 +34,10 @@ class Cancelled(Exception):
     """Raised inside the worker when the web side asked to stop."""
 
 
+class UserError(Exception):
+    """A problem with the request itself: its message is already a plain sentence for the user."""
+
+
 def oom_score(val: int) -> None:
     """Raise this process's OOM score so Linux kills it before the web app."""
     try:
@@ -154,15 +158,15 @@ def _job_from(eng, j: dict, step) -> "object":
                       image=image, mask=mask, strength=float(j.get("strength", 0.75)), on_step=step)
 
 
-def _plain_job(j: dict, seed: int, step, image=None, count: int = 1) -> "object":
+def _plain_job(j: dict, seed: int, step, image=None, count: int = 1, strength: float | None = None) -> "object":
     """A Job built by hand: the pipelines get called by the caller (inpaint_crop / generate)."""
     models = _models
-    w, h = image.size if image is not None else (int(j["width"]), int(j["height"]))
+    w, h = image.size if image is not None else (int(j.get("width", 1024)), int(j.get("height", 1024)))  # edits take their size from the crop
     return models.Job(prompt=j["prompt"], negative=j.get("negative", ""), steps=int(j["steps"]),
                       cfg=float(j["cfg"]), width=w, height=h, seed=seed, count=count,
                       sampler=j.get("sampler", "dpmpp_2m_karras"), clip_skip=int(j.get("clip_skip", 2)),
                       loras=[(p, float(v)) for p, v in j.get("loras") or []], image=image,
-                      strength=float(j.get("strength", 0.75)), on_step=step)
+                      strength=float(j.get("strength", 0.75) if strength is None else strength), on_step=step)
 
 
 def save_edit_masks(paths: list[str], masks: list) -> None:
@@ -186,12 +190,17 @@ def _edit_images(eng, args, step, check):
     if tool == "extend":
         base, mask = edit.outpaint_canvas(base, tuple(j.get("extend") or (0, 0, 0, 0)), multiple)
     elif j.get("mask"):
-        mask = edit.mask_from_painted(j["mask"], base.size)
+        try:
+            mask = edit.mask_from_painted(j["mask"], base.size)
+        except ValueError as e:
+            raise UserError(str(e)) from None
+        except OSError:
+            raise UserError("The painted mask is gone; paint it again.") from None
     else:
         mask = edit.mask_from_boxes(base.size, j.get("boxes") or [])
     if edit.mask_bbox(mask) is None:
-        raise RuntimeError("nothing is painted: mark the area to change first")
-    regions = edit.split_regions(mask) or [mask]
+        raise UserError("Nothing is painted. Mark the part to change first.")
+    regions = [mask] if tool == "extend" else edit.split_regions(mask) or [mask]  # new space on two sides is one job
     count = max(1, min(4, int(j.get("count", 1))))
     seed = int(j.get("seed", -1)) if int(j.get("seed", -1)) >= 0 else random.randrange(2**31 - 1)
     feather = int(j.get("feather", 12))
@@ -199,9 +208,9 @@ def _edit_images(eng, args, step, check):
     for c in range(count):
         img = base.copy()
         for rm in regions:
-            plan = edit.prepare(img, rm, multiple, feather_px=feather)
+            plan = edit.prepare(img, rm, multiple, feather_px=feather, fill=tool != "extend")
             check()
-            job = _plain_job(j, seed + c, step)
+            job = _plain_job(j, seed + c, step, strength=1.0 if tool == "extend" else None)  # a new area is repainted fully
             out = eng.inpaint_crop(job, plan.crop, plan.crop_mask)
             img = edit.paste_back(img, out, plan)
             check()
@@ -215,6 +224,8 @@ def _op_generate(eng, args, status, step, check):
     t0 = time.time()
     j = args["job"]
     tool = j.get("tool")
+    if j.get("blend", "plain") != "plain":  # the ControlNet blend comes with the T4 work
+        raise UserError("That blend mode is not available yet. Use the plain one.")
     if tool in ("area", "extend"):
         images, masks, seed, note = _edit_images(eng, args, step, check)
         meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
@@ -227,8 +238,15 @@ def _op_generate(eng, args, status, step, check):
         original = edit.load_source(j["image"])
         base, _, _ = work_copy(original, multiple)
         check()
-        job = _plain_job(j, int(j.get("seed", -1)), step, image=base, count=max(1, min(4, int(j.get("count", 1)))))
-        images, seed, info = eng.generate(job)
+        seed = int(j.get("seed", -1))
+        if seed < 0:
+            import random
+            seed = random.randrange(2**31 - 1)
+        images, info = [], ""
+        for c in range(max(1, min(4, int(j.get("count", 1))))):  # variations run one after another
+            check()
+            ims, _, info = eng.generate(_plain_job(j, seed + c, step, image=base, count=1))
+            images += ims
         if j.get("keep_size"):
             images = [im.resize(original.size, Image.LANCZOS) for im in images]
         meta = {**(args.get("meta") or {}), "seconds": round(time.time() - t0, 1)}
@@ -371,6 +389,8 @@ def main(conn, cancel_event, parent_pid: int) -> None:
                 send({"type": "result", "id": cur["id"], "result": res}, stamp="result")
             except Cancelled:
                 send({"type": "cancelled", "id": cur["id"]})
+            except UserError as e:
+                send({"type": "error", "id": cur["id"], "error": str(e), "plain": True})
             except Exception as e:
                 import traceback
                 send({"type": "error", "id": cur["id"], "error": f"{type(e).__name__}: {e}",

@@ -319,6 +319,8 @@ class EngineClient:
                         raise Cancelled("cancelled")
                     elif t == "error":
                         log.info(f"engine op failed: {ev.get('error')}\n{ev.get('tb', '')[-1500:]}")
+                        if ev.get("plain"):  # a sentence for the user (a bad request, not an engine failure)
+                            raise ValueError(ev["error"])
                         raise RuntimeError(ev.get("error") or "engine error")
             finally:
                 with self._lock:

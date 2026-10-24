@@ -62,6 +62,8 @@ def mask_from_boxes(size: tuple[int, int], boxes: list) -> Image.Image:
 def mask_from_painted(path: str | Path, size: tuple[int, int]) -> Image.Image:
     """The painter's PNG (8-bit L, natural size) resized to the work copy."""
     m = Image.open(path).convert("L")
+    if abs(m.width / m.height - size[0] / size[1]) > 0.01 * size[0] / size[1]:
+        raise ValueError("The mask doesn't match this image; clear it and paint again.")
     if m.size != size:
         m = m.resize(size, Image.BILINEAR)
     return m
@@ -203,10 +205,12 @@ def _mult(n: int, m: int) -> int:
 
 
 def prepare(img: Image.Image, mask: Image.Image, multiple: int, feather_px: int = DEFAULT_FEATHER,
-            grow_px: int | None = None) -> EditPlan:
-    """Full mask pipeline up to the pipeline call; the result is stitched by paste_back."""
+            grow_px: int | None = None, fill: bool = True) -> EditPlan:
+    """Full mask pipeline up to the pipeline call; the result is stitched by paste_back.
+    fill=False keeps holes (outpaint: the kept original is a hole in the mask)."""
     mask = hipass(mask)
-    mask = fill_holes(mask)
+    if fill:
+        mask = fill_holes(mask)
     grown = grow(mask, grow_px if grow_px is not None else grow_px_for(img.size))
     box = context_box(grown, img.size)
     bx, by = box[2] - box[0], box[3] - box[1]
@@ -243,19 +247,20 @@ def outpaint_canvas(img: Image.Image, sides: tuple[float, float, float, float],
     # the added space is split between the sides by their ratio (25/25 = centered)
     ox = int((NW - W) * (l / (l + r))) if l + r else 0
     oy = int((NH - H) * (t / (t + b))) if t + b else 0
-    canvas = Image.new("RGB", (NW, NH))
     # stretch the border pixels outward, then blur the filler so it carries no sharp pattern
     big = img.resize((NW, NH), Image.LANCZOS)  # cheap edge extension: same content, scaled to fill
-    canvas.paste(big.filter(ImageFilter.GaussianBlur(24)), (0, 0))
-    canvas.paste(img, (ox, oy))
-    noise = (np.random.default_rng(7).normal(0, 5, (NH, NW, 1))).repeat(3, axis=2)  # light texture
-    arr = np.asarray(canvas).astype(np.int16) + noise.astype(np.int16)
+    filler = big.filter(ImageFilter.GaussianBlur(24))
+    noise = (np.random.default_rng(7).normal(0, 5, (NH, NW, 1))).repeat(3, axis=2)  # light texture, filler only
+    arr = np.asarray(filler).astype(np.int16) + noise.astype(np.int16)
     canvas = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+    canvas.paste(img, (ox, oy))  # the original last: its pixels stay exactly as they were
     # repaint everything except the original area shrunk by the band (0 = keep)
+    # the band reaches into the original only on sides that got new space
     m = Image.new("L", (NW, NH), 255)
     d = ImageDraw.Draw(m)
-    d.rectangle([ox + OUTPAINT_BAND_PX, oy + OUTPAINT_BAND_PX, ox + W - 1 - OUTPAINT_BAND_PX,
-                 oy + H - 1 - OUTPAINT_BAND_PX], fill=0)
+    bl, bt = OUTPAINT_BAND_PX if ox > 0 else 0, OUTPAINT_BAND_PX if oy > 0 else 0
+    br, bb = OUTPAINT_BAND_PX if NW - (ox + W) > 0 else 0, OUTPAINT_BAND_PX if NH - (oy + H) > 0 else 0
+    d.rectangle([ox + bl, oy + bt, ox + W - 1 - br, oy + H - 1 - bb], fill=0)
     return canvas, m
 
 
