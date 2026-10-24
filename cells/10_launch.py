@@ -14,4 +14,4 @@ PULL_FROM_SYNC_REPO = True  #@param {type:"boolean"}
 args = ["-m", "sdxlr.webui", "--port", 7860]
 if PULL_FROM_SYNC_REPO:
     args += ["--sync"]
-nb.run(args)
+nb.serve(args)  # starts the app again if it crashes

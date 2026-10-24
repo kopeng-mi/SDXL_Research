@@ -19,6 +19,7 @@ dependencies = [
     "gradio==6.30.0",
     "timm==1.0.30",  # WD tagger
     "nicegui==3.18.0",
+    "nvidia-ml-py==13.615.71",  # GPU memory per process for the sidebar
     "pyyaml",
     "psutil",
 ]

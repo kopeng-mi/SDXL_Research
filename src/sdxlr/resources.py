@@ -65,12 +65,17 @@ def model_parts(eng) -> list[tuple[str, float]]:
     return out
 
 
+_nvml: list = []
+
+
 def _gpu_procs() -> dict[int, float]:
-    """pid -> GB for processes using the GPU (nvidia-smi)."""
+    """pid -> GB for processes using the GPU, via NVML (in-process, no nvidia-smi subprocess)."""
     try:
-        r = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=3)
-        return {int(p): int(m) / 1024 for p, m in (l.split(", ") for l in r.stdout.strip().splitlines() if ", " in l)}
+        import pynvml
+        if not _nvml:
+            pynvml.nvmlInit()
+            _nvml.append(pynvml.nvmlDeviceGetHandleByIndex(0))
+        return {p.pid: (p.usedGpuMemory or 0) / GB for p in pynvml.nvmlDeviceGetComputeRunningProcesses(_nvml[0])}
     except Exception:
         return {}
 

@@ -57,6 +57,26 @@ def run(args: list[str], cwd: str | Path = REPO, progress_every: float = 5.0) ->
         raise SystemExit(f"failed with exit code {proc.returncode}")
 
 
+def serve(args: list[str], max_restarts: int = 5) -> None:
+    """Run the app and start it again if it crashes (not when you stop the cell).
+
+    More than `max_restarts` crashes within 10 minutes means something is
+    broken for good: stop and leave the log in the cell.
+    """
+    crashes: list[float] = []
+    while True:
+        try:
+            run(args)
+            return  # stopped from the cell, or exited cleanly
+        except SystemExit as e:
+            crashes = [t for t in crashes if time.time() - t < 600] + [time.time()]
+            if len(crashes) > max_restarts:
+                print(f"the app crashed {len(crashes)} times in 10 minutes; not restarting ({e})", flush=True)
+                raise
+            print(f"the app stopped ({e}); starting it again in 5 s (the address stays the same)", flush=True)
+            time.sleep(5)
+
+
 SECRETS = ("HF_TOKEN", "CIVITAI_TOKEN", "TS_AUTHKEY")
 
 
