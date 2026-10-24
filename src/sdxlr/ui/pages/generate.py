@@ -481,7 +481,7 @@ def page(S):
     def draw_canvas():
         img = shown_img()
         if S["tool"] == "area" and shown["tool"] != "area":
-            S["strength"] = 0.85 if S["kind"] == "Z-Image" else 0.75  # the plan's defaults per model
+            area_default()
         shown.update(img=img, tool=S["tool"], cmp=compare_key(), need=None)
         src = S["src"] if S["tool"] else None
         if src != painter["src"]:  # a new source image: a fresh painter and an empty mask
@@ -587,10 +587,16 @@ def page(S):
             pending["result"] = None
         draw_canvas()
 
+    auto = {"strength": None}  # the strength last set automatically; anything else is the user's choice
+
+    def area_default():
+        """Painted-part strength: 0.85 Z-Image / 0.75 SDXL (the plan's defaults), unless the user moved the slider."""
+        if auto["strength"] is None or S["strength"] == auto["strength"]:
+            S["strength"] = auto["strength"] = 0.85 if S["kind"] == "Z-Image" else 0.75
+
     def on_kind():
-        """Painted mode keeps the per-model strength default unless the user moved the slider."""
-        if S["tool"] == "area" and S["strength"] in (0.85, 0.75):
-            S["strength"] = 0.85 if S["kind"] == "Z-Image" else 0.75
+        if S["tool"] == "area":
+            area_default()
 
     def set_tool(tool):
         if tool and not S["image"]:
