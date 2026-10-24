@@ -8,8 +8,13 @@ Rules (15 GB VRAM, ~12.7 GB RAM, no fast bf16):
     are dropped past MAX_ADAPTERS
   * prompt embeddings are cached, so seed/step changes skip re-encoding
   * out of memory: free cache, turn on VAE tiling, retry once
-  * inpaint reuses the loaded weights (from_pipe, fp16: without torch_dtype
-    from_pipe casts the shared UNet/VAE to fp32 in place and doubles VRAM)
+  * inpaint and image-to-image reuse the loaded weights (from_pipe, fp16:
+    without torch_dtype from_pipe casts the shared UNet/VAE to fp32 in place
+    and doubles VRAM)
+  * after each image the CUDA cache is released, so the VRAM reading shows
+    what the model really holds (about 5 GB of activations otherwise stay reserved)
+  * upscale = enlarge, then refine overlapping tiles with image-to-image and
+    blend them; every tile is about one normal image, so any size fits a T4
 """
 
 from __future__ import annotations
@@ -68,7 +73,7 @@ class Job:
     sampler: str = "dpmpp_2m_karras"
     clip_skip: int = 2
     loras: list[tuple[str, float]] = field(default_factory=list)  # (path, weight)
-    image: Image.Image | None = None  # inpaint source
+    image: Image.Image | None = None  # source: with mask = change an area, without = change the whole image
     mask: Image.Image | None = None  # white = repaint
     strength: float = 0.75
     on_step: Callable[[int, int], None] | None = None  # (done, total) after each denoising step
@@ -132,10 +137,11 @@ class Engine:
         self._embeds: OrderedDict[tuple, dict] = OrderedDict()
         self._sampler: str | None = None
         self._inpaint = None
+        self._img2img = None
 
     # ---- model ----
     def unload(self) -> None:
-        self.pipe = self._inpaint = None
+        self.pipe = self._inpaint = self._img2img = None
         self.kind = self.model_path = self._sampler = None
         self.adapters.clear()
         self._embeds.clear()
@@ -268,7 +274,7 @@ class Engine:
                       generator=gen, **_step_cb(job))
         if job.cfg > 1 and job.negative:
             common["negative_prompt"] = [job.negative] * job.count
-        if job.image is not None:
+        if job.image is not None and job.mask is not None:
             if self._inpaint is None:
                 from diffusers import ZImageInpaintPipeline
                 # GGUF/bnb weights can't be cast, which from_pipe tries; reuse the parts as they are
@@ -277,6 +283,13 @@ class Engine:
             w, h = (img.width // 16) * 16, (img.height // 16) * 16
             return self._inpaint(image=img.resize((w, h)), mask_image=job.mask.convert("L").resize((w, h)),
                                  width=w, height=h, strength=job.strength, **common).images
+        if job.image is not None:
+            if self._img2img is None:
+                from diffusers import ZImageImg2ImgPipeline
+                self._img2img = ZImageImg2ImgPipeline(**self.pipe.components)
+            img = job.image.convert("RGB")
+            w, h = (img.width // 16) * 16, (img.height // 16) * 16
+            return self._img2img(image=img.resize((w, h)), width=w, height=h, strength=job.strength, **common).images
         return self.pipe(width=job.width, height=job.height, **common).images
 
     def _run(self, job: Job, seed: int) -> list[Image.Image]:
@@ -289,6 +302,13 @@ class Engine:
         rep = {k: v.repeat(job.count, *[1] * (v.dim() - 1)) for k, v in emb.items()}
         gen = [torch.Generator("cpu").manual_seed(seed + i) for i in range(job.count)]
         common = dict(num_inference_steps=job.steps, guidance_scale=job.cfg, generator=gen, **rep, **_step_cb(job))
+        if job.image is not None and job.mask is None:
+            if self._img2img is None:
+                from diffusers import StableDiffusionXLImg2ImgPipeline
+                self._img2img = StableDiffusionXLImg2ImgPipeline.from_pipe(self.pipe, torch_dtype=torch.float16)
+            img = job.image.convert("RGB")
+            return self._img2img(image=img.resize(((img.width // 8) * 8, (img.height // 8) * 8)),
+                                 strength=job.strength, **common).images
         if job.image is not None:
             if self._inpaint is None:
                 from diffusers import StableDiffusionXLInpaintPipeline
@@ -312,4 +332,44 @@ class Engine:
             torch.cuda.empty_cache()
             self.pipe.vae.enable_tiling()
             images = self._run(job, seed)  # a second OOM propagates to the caller
-        return images, seed, f"{time.time() - t:.1f}s | seed {seed} | {vram()} | {ram()}"
+        info = f"{time.time() - t:.1f}s | seed {seed} | {vram()} | {ram()}"
+        torch.cuda.empty_cache()  # give back the activations' memory between images
+        return images, seed, info
+
+    def upscale(self, job: Job, scale: float = 2.0, tile: int = 1024, overlap: int = 128,
+                on_tile=None) -> tuple[Image.Image, int, str]:
+        """Enlarge job.image by `scale`, then refine overlapping tiles with image-to-image (job.prompt,
+        job.strength) and blend them with feathered edges. on_tile(done, total) reports progress."""
+        import numpy as np
+        if self.pipe is None:
+            raise RuntimeError("no model loaded")
+        t = time.time()
+        seed = job.seed if job.seed >= 0 else int(torch.randint(0, 2**31 - 1, (1,)))
+        m = 16 if self.kind == "zimage" else 8
+        src = job.image.convert("RGB")
+        W, H = (int(src.width * scale) // m) * m, (int(src.height * scale) // m) * m
+        big = src.resize((W, H), Image.LANCZOS)
+        if W <= tile and H <= tile:
+            boxes = [(0, 0, W, H)]
+        else:
+            step = tile - overlap
+            xs = sorted({*range(0, max(W - tile, 0) + 1, step), max(W - tile, 0)})
+            ys = sorted({*range(0, max(H - tile, 0) + 1, step), max(H - tile, 0)})
+            boxes = [(x, y, min(x + tile, W), min(y + tile, H)) for y in ys for x in xs]
+        acc = np.zeros((H, W, 3), np.float32)
+        wsum = np.zeros((H, W, 1), np.float32)
+        for i, (x0, y0, x1, y1) in enumerate(boxes):
+            sub = Job(**{**job.__dict__, "image": big.crop((x0, y0, x1, y1)), "mask": None, "count": 1,
+                         "seed": seed, "on_step": None})
+            out = self._run(sub, seed)[0].resize((x1 - x0, y1 - y0), Image.LANCZOS)
+            # weight falls off linearly over the overlap, so seams blend
+            wx = np.minimum(np.arange(x1 - x0) + 1, np.arange(x1 - x0)[::-1] + 1).clip(max=overlap) / overlap
+            wy = np.minimum(np.arange(y1 - y0) + 1, np.arange(y1 - y0)[::-1] + 1).clip(max=overlap) / overlap
+            wgt = (wy[:, None] * wx[None, :])[..., None].astype(np.float32)
+            acc[y0:y1, x0:x1] += np.asarray(out, np.float32) * wgt
+            wsum[y0:y1, x0:x1] += wgt
+            if on_tile:
+                on_tile(i + 1, len(boxes))
+        torch.cuda.empty_cache()
+        res = Image.fromarray((acc / np.maximum(wsum, 1e-6)).clip(0, 255).astype(np.uint8))
+        return res, seed, f"{time.time() - t:.1f}s | {W}x{H} from {len(boxes)} tiles | seed {seed} | {vram()}"
