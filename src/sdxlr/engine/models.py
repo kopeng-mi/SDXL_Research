@@ -31,7 +31,8 @@ from typing import Callable
 import torch
 from PIL import Image
 
-from ..paths import FP16_VAE, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, z_key
+from ..paths import FP16_VAE, PREVIEWS, SAMPLERS, Z_ENCODERS, Z_MODELS, Z_REPO, te_prequantized, z_key
+from .keys import needs_tiling, reuse_plan, z_embed_key
 from .. import loraformat
 from ..prompt import encode_sdxl
 
@@ -55,6 +56,7 @@ class Job:
     mask: Image.Image | None = None  # white = repaint
     strength: float = 0.75
     on_step: Callable[[int, int], None] | None = None  # (done, total) after each denoising step
+    on_preview: Callable[[int, object], None] | None = None  # (step, latents) every 2nd step, for live previews
 
 
 def _fix_text_encoder_lora_keys(pipe) -> None:
@@ -81,12 +83,17 @@ def _fix_text_encoder_lora_keys(pipe) -> None:
 
 
 def _step_cb(job: Job) -> dict:
-    """callback_on_step_end that reports (done, total); total is the pipeline's own step count."""
-    if job.on_step is None:
+    """callback_on_step_end that reports (done, total) and hands every 2nd step's latents to the preview;
+    total is the pipeline's own step count."""
+    if job.on_step is None and job.on_preview is None:
         return {}
 
     def cb(pipe, i, t, kw):
-        job.on_step(i + 1, getattr(pipe, "_num_timesteps", None) or job.steps)
+        total = getattr(pipe, "_num_timesteps", None) or job.steps
+        if job.on_step:
+            job.on_step(i + 1, total)
+        if job.on_preview and "latents" in kw and (i + 1) % 2 == 0 and i + 1 < total:
+            job.on_preview(i + 1, kw["latents"])
         return kw
 
     return {"callback_on_step_end": cb}
@@ -117,6 +124,7 @@ class Engine:
         self._sampler: str | None = None
         self._inpaint = None
         self._img2img = None
+        self._prev = None  # live preview decoder (engine/preview.py), made on first use
 
     # ---- model ----
     def unload(self) -> None:
@@ -156,8 +164,9 @@ class Engine:
         """Z-Image: GGUF (or safetensors) transformer + Qwen3 text encoder, fp16 with the T4 overflow fix.
 
         transformer:  org/repo/file, URL or path (.gguf recommended on T4)
-        text_encoder: 'org/repo' or 'org/repo:subfolder'
-        te_quant:     nf4 (~2.5 GB) | int8 (~4.4 GB) | fp16 (~8 GB, may not fit next to Q8)
+        text_encoder: 'org/repo' or 'org/repo:subfolder'; the unsloth bnb-4bit one is pre-quantized
+        te_quant:     nf4 (~2.5 GB) | int8 (~4.4 GB) | fp16 (~8 GB, may not fit next to Q8); ignored when pre-quantized
+        Changing only the transformer or only the text encoder keeps the other loaded part (no re-quantizing, no re-read).
         """
         key = z_key(transformer, text_encoder, te_quant)
         if self.pipe is not None and self.model_path == key:
@@ -168,34 +177,79 @@ class Engine:
         from ..fetch import MODELS, fetch
         from ..zimage_fp16 import patch
 
-        self.unload()
+        keep_tr, keep_te = reuse_plan(self.model_path if self.kind == "zimage" else None, transformer, text_encoder, te_quant)
+        old = self.pipe
+        old_tr = old.transformer if old is not None and keep_tr else None
+        old_te = old.text_encoder if old is not None and keep_te else None
+        if old_tr is not None and self.adapters:  # adapters sit inside the transformer: drop them, they reload when used
+            try:
+                old.delete_adapters(list(self.adapters.values()))
+            except Exception:
+                pass
+        embeds = self._embeds if old_te is not None else None  # the embeddings depend on the text encoder only
+        self.unload()  # frees everything except the parts held by old_tr / old_te
+        del old
+        if embeds is not None:
+            self._embeds = embeds
         t = time.time()
         dt = torch.float16
-        status("Getting the model file")
-        src = fetch(transformer, MODELS / "zimage")
-        status("Loading the model")
-        kw = {"torch_dtype": dt, "config": Z_REPO, "subfolder": "transformer"}
-        if src.suffix == ".gguf":
-            kw["quantization_config"] = GGUFQuantizationConfig(compute_dtype=dt)
-        tr = ZImageTransformer2DModel.from_single_file(str(src), **kw)
-
-        repo, _, sub = text_encoder.partition(":")
-        q = None
-        if te_quant == "nf4":
-            q = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=dt)
-        elif te_quant == "int8":
-            q = BitsAndBytesConfig(load_in_8bit=True)
-        status(f"Getting the text encoder ({te_quant})")
-        te = AutoModel.from_pretrained(repo, subfolder=sub or "", dtype=dt, quantization_config=q)
+        if old_tr is not None:
+            status("Keeping the loaded model")
+            tr, name = old_tr, "kept"
+        else:
+            status("Getting the model file")
+            src = fetch(transformer, MODELS / "zimage")
+            status("Loading the model")
+            kw = {"torch_dtype": dt, "config": Z_REPO, "subfolder": "transformer"}
+            if src.suffix == ".gguf":
+                kw["quantization_config"] = GGUFQuantizationConfig(compute_dtype=dt)
+            tr = ZImageTransformer2DModel.from_single_file(str(src), **kw)
+            name = Path(str(src)).name
+        if old_te is not None:
+            te = old_te
+        else:
+            repo, _, sub = text_encoder.partition(":")
+            prequant = te_prequantized(text_encoder)
+            q = None
+            if prequant:
+                pass  # ships its own bnb config; its modules stay as saved
+            elif te_quant == "nf4":
+                q = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=dt)
+            elif te_quant == "int8":
+                q = BitsAndBytesConfig(load_in_8bit=True)
+            status(f"Getting the text encoder ({'pre-quantized' if prequant else te_quant})")
+            # the unsloth file is a Qwen3ForCausalLM checkpoint (every key starts with "model."); AutoModel builds the
+            # base Qwen3Model, and transformers strips the base-model prefix when loading a head checkpoint into it
+            te = AutoModel.from_pretrained(repo, subfolder=sub or "", dtype=dt, quantization_config=q)
+            if prequant:
+                self._fp16_compute(te)
 
         status("Getting VAE and configs")
         pipe = ZImagePipeline.from_pretrained(Z_REPO, transformer=tr, text_encoder=te, torch_dtype=dt)
         pipe.set_progress_bar_config(disable=True)
         status("Moving to GPU")
         self.pipe = pipe.to("cuda")
-        patch(self.pipe.transformer)  # fp16 on T4 otherwise gives black images
+        if old_tr is None:
+            patch(self.pipe.transformer)  # fp16 on T4 otherwise gives black images
         self.kind, self.model_path, self.vae_mode = "zimage", key, None
-        return f"loaded Z-Image ({Path(str(src)).name}, TE {te_quant}) in {time.time() - t:.0f}s | {vram()}"
+        kept = " (kept " + " and ".join(n for n, k in (("transformer", old_tr), ("text encoder", old_te)) if k is not None) + ")" \
+            if old_tr is not None or old_te is not None else ""
+        return f"loaded Z-Image ({name}, TE {'pre-quantized' if te_prequantized(text_encoder) else te_quant}){kept} in {time.time() - t:.0f}s | {vram()}"
+
+    @staticmethod
+    def _fp16_compute(te) -> None:
+        """The unsloth encoder stores bnb_4bit_compute_dtype bfloat16, which a T4 cannot do fast (or at all):
+        run every 4-bit Linear in fp16."""
+        try:
+            import bitsandbytes as bnb
+        except ImportError:
+            return
+        for m in te.modules():
+            if isinstance(m, bnb.nn.Linear4bit):
+                m.compute_dtype = torch.float16
+                qs = getattr(m.weight, "quant_state", None)
+                if qs is not None:
+                    qs.dtype = torch.float16
 
     def _set_sampler(self, name: str) -> None:
         if name == self._sampler:
@@ -252,14 +306,45 @@ class Engine:
         self._embeds.move_to_end(key)
         return self._embeds[key]
 
+    def _tiling(self, width: int, height: int) -> None:
+        """VAE tiling only for decodes over 1.5 MP; it is switched per call, so a small one never pays for it."""
+        vae = getattr(self.pipe, "vae", None)
+        if vae is not None:
+            (vae.enable_tiling if needs_tiling(width, height) else vae.disable_tiling)()
+
+    def _z_embeds(self, job: Job, count: int) -> dict:
+        """Z-Image prompt embeddings, encoded once per (prompt, negative, text encoder, TE-touching LoRAs) and reused by
+        generate, edits and every upscale tile. Returned as the pipeline's `prompt_embeds` arguments (one per image)."""
+        key = z_embed_key(job.prompt, job.negative, job.cfg, self.model_path.split("|")[2:4], job.loras)
+        if key not in self._embeds:
+            neg = job.negative if job.cfg > 1 and job.negative else None
+            with torch.no_grad():
+                pe, ne = self.pipe.encode_prompt(job.prompt, device="cuda", do_classifier_free_guidance=job.cfg > 1,
+                                                 negative_prompt=neg)
+            self._embeds[key] = (pe[0], ne[0] if ne else None)
+            while len(self._embeds) > 8:
+                self._embeds.popitem(last=False)
+        self._embeds.move_to_end(key)
+        pe, ne = self._embeds[key]
+        out = {"prompt_embeds": [pe] * count}
+        if ne is not None:
+            out["negative_prompt_embeds"] = [ne] * count
+        return out
+
+    def make_preview(self, latents, path, done) -> None:
+        """Save a live preview of these latents to `path` (cheap, skipped while the last one is being written)."""
+        from .preview import Previewer
+        if self._prev is None:
+            self._prev = Previewer()
+        self._prev.make(self.kind, self.pipe, latents, path, done)
+
     def _run_zimage(self, job: Job, seed: int) -> list[Image.Image]:
         # Qwen text encoder: no A1111 weights / clip skip; negative only matters with cfg > 1
         self.set_loras(job.loras)
         gen = [torch.Generator("cpu").manual_seed(seed + i) for i in range(job.count)]
-        common = dict(prompt=[job.prompt] * job.count, num_inference_steps=job.steps, guidance_scale=job.cfg,
-                      generator=gen, **_step_cb(job))
-        if job.cfg > 1 and job.negative:
-            common["negative_prompt"] = [job.negative] * job.count
+        self._tiling(*(job.image.size if job.image is not None else (job.width, job.height)))
+        common = dict(num_inference_steps=job.steps, guidance_scale=job.cfg, generator=gen,
+                      **self._z_embeds(job, job.count), **_step_cb(job))
         if job.image is not None and job.mask is not None:
             if self._inpaint is None:
                 from diffusers import ZImageInpaintPipeline
@@ -284,6 +369,7 @@ class Engine:
         lora_key = tuple(sorted((p, round(w, 4)) for p, w in job.loras if p and w))
         self.set_loras(job.loras)
         self._set_sampler(job.sampler)
+        self._tiling(*(job.image.size if job.image is not None else (job.width, job.height)))
         t0 = time.time()
         emb = self._encode(job, lora_key)
         if tim is not None:
@@ -363,10 +449,8 @@ class Engine:
             w, h = (img.width // 16) * 16, (img.height // 16) * 16
             if (w, h) != img.size:
                 img = img.resize((w, h))
-            kw = dict(prompt=job.prompt, num_inference_steps=job.steps, guidance_scale=job.cfg,
-                      generator=gen, **_step_cb(job))
-            if job.cfg > 1 and job.negative:
-                kw["negative_prompt"] = job.negative
+            kw = dict(num_inference_steps=job.steps, guidance_scale=job.cfg, generator=gen,
+                      **self._z_embeds(job, 1), **_step_cb(job))
             return self._inpaint(image=img, mask_image=m.resize(img.size), width=w, height=h,
                                  strength=job.strength, **kw).images[0]
         if self._inpaint is None:
@@ -410,7 +494,7 @@ class Engine:
         wsum = np.zeros((H, W, 1), np.float32)
         for i, (x0, y0, x1, y1) in enumerate(boxes):
             sub = Job(**{**job.__dict__, "image": big.crop((x0, y0, x1, y1)), "mask": None, "count": 1,
-                         "seed": seed, "on_step": None})
+                         "seed": seed, "on_step": None, "on_preview": None})
             out = self._run(sub, seed)[0].resize((x1 - x0, y1 - y0), Image.LANCZOS)
             # weight falls off linearly over the overlap, so seams blend
             wx = np.minimum(np.arange(x1 - x0) + 1, np.arange(x1 - x0)[::-1] + 1).clip(max=overlap) / overlap
