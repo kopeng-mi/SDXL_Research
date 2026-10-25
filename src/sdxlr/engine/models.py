@@ -219,11 +219,25 @@ class Engine:
             src = fetch(transformer, MODELS / "zimage")
             status("Loading the model")
             kw = {"torch_dtype": dt, "config": Z_REPO, "subfolder": "transformer"}
+            cache = src.parent / f"{src.stem}-nf4"  # a custom bf16/fp16/fp8 checkpoint, quantized once
             if src.suffix == ".gguf":
                 kw["quantization_config"] = GGUFQuantizationConfig(compute_dtype=dt)
-            tr = ZImageTransformer2DModel.from_single_file(str(src), **kw)
+                tr = ZImageTransformer2DModel.from_single_file(str(src), **kw)
+            elif (cache / "config.json").exists():
+                tr = ZImageTransformer2DModel.from_pretrained(cache, torch_dtype=dt)
+            else:  # full size (12 GB bf16) does not fit next to the text encoder: nf4 ≈ 3.4 GB
+                from diffusers import BitsAndBytesConfig as DiffusersBnb
+                status("Quantizing the model to 4-bit (once; cached next to the file)")
+                kw["quantization_config"] = DiffusersBnb(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                                         bnb_4bit_compute_dtype=dt)
+                tr = ZImageTransformer2DModel.from_single_file(str(src), **kw)
+                try:
+                    tr.save_pretrained(cache)
+                except Exception as e:  # a full disk only costs the cache
+                    print(f"could not cache the 4-bit model ({type(e).__name__}: {e})", flush=True)
             status("Moving the model to GPU")
-            tr = tr.to("cuda")  # its RAM is free before the text encoder loads (Q8 peaked at 9.6 of 12.7 GB on T4)
+            if src.suffix == ".gguf":  # bnb models are placed on the GPU while loading
+                tr = tr.to("cuda")  # its RAM is free before the text encoder loads (Q8 peaked at 9.6 of 12.7 GB on T4)
             gc.collect()
             name = Path(str(src)).name
         if old_te is not None:
