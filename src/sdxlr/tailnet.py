@@ -48,10 +48,10 @@ def _running() -> bool:
     return bool(r and r.returncode == 0 and json.loads(r.stdout).get("BackendState") == "Running")
 
 
-def up(port: int, authkey: str | None = None) -> str:
-    """Join the tailnet as `sdxlr` (or reuse the running connection); returns the address to open."""
+def up(port: int, authkey: str | None = None, hostname: str = HOSTNAME) -> str:
+    """Join the tailnet as `hostname` (or reuse the running connection); returns the address to open."""
     if _running():  # app restarted: tailscaled keeps the connection, no key needed
-        return _address(port)
+        return _address(port, hostname)
     key = authkey or os.environ.get("TS_AUTHKEY")
     if not key:
         raise RuntimeError("TS_AUTHKEY is not set (add it in Colab Secrets)")
@@ -65,10 +65,10 @@ def up(port: int, authkey: str | None = None) -> str:
             time.sleep(1)
             if Path(SOCK).exists():
                 break
-    r = cli("up", f"--auth-key={key}", f"--hostname={HOSTNAME}", "--accept-dns=false", timeout=90)
+    r = cli("up", f"--auth-key={key}", f"--hostname={hostname}", "--accept-dns=false", timeout=90)
     if r.returncode != 0:
         raise RuntimeError(f"tailscale up failed: {(r.stderr or r.stdout).strip()[-300:]}")
-    return _address(port)
+    return _address(port, hostname)
 
 
 def down() -> None:
@@ -80,11 +80,11 @@ def down() -> None:
         pass
 
 
-def _address(port: int) -> str:
+def _address(port: int, hostname: str = HOSTNAME) -> str:
     st = json.loads(cli("status", "--json").stdout)
     dns = st["Self"].get("DNSName", "").rstrip(".")
     ip = (st["Self"].get("TailscaleIPs") or ["?"])[0]
-    name = dns.split(".")[0] if dns else HOSTNAME
+    name = dns.split(".")[0] if dns else hostname
     return f"http://{name}:{port}  (or http://{ip}:{port}, full name {dns})"
 
 

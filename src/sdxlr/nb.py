@@ -16,15 +16,15 @@ REPO = Path(__file__).resolve().parents[2]
 VENV_PY = "/content/venv/bin/python"
 
 
-def run(args: list[str], cwd: str | Path = REPO, progress_every: float = 5.0) -> None:
-    """Run `python args...` in the venv and stream its output into the cell.
+def run(args: list[str], cwd: str | Path = REPO, progress_every: float = 5.0, py: str = VENV_PY) -> None:
+    """Run `python args...` in the venv (or another interpreter: `py`) and stream its output into the cell.
 
     tqdm redraws with '\\r'; those updates are printed at most every
     `progress_every` seconds so the cell does not fill with progress bars.
     """
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
            "TOKENIZERS_PARALLELISM": "false", "PYTHONPATH": str(REPO / "src")}
-    proc = subprocess.Popen([VENV_PY, "-u", *map(str, args)], cwd=cwd, env=env,
+    proc = subprocess.Popen([py, "-u", *map(str, args)], cwd=cwd, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     buf, last = b"", 0.0
     try:
@@ -93,6 +93,29 @@ def load_secrets() -> dict[str, bool]:
                 pass
         found[key] = bool(os.environ.get(key))
     return found
+
+
+def show_images(paths: list[str | Path], width: int = 256, captions: bool = True) -> None:
+    """Thumbnails in the cell, each with its .txt caption below (kernel side, no PIL)."""
+    import base64
+    import html
+    from IPython.display import HTML, display  # type: ignore
+    parts = []
+    for p in map(Path, paths):
+        mime = "png" if p.suffix.lower() == ".png" else "jpeg"
+        img = base64.b64encode(p.read_bytes()).decode()
+        txt = p.with_suffix(".txt")
+        cap = html.escape(txt.read_text(encoding="utf-8")) if captions and txt.exists() else ""
+        parts.append(f'<figure style="display:inline-block;width:{width}px;margin:4px;vertical-align:top">'
+                     f'<img src="data:image/{mime};base64,{img}" style="width:100%"/>'
+                     f'<figcaption style="font-size:11px">{html.escape(p.name)}<br>{cap}</figcaption></figure>')
+    display(HTML("".join(parts)))
+
+
+def drive_mount(root: str | Path | None = None) -> Path:
+    """Mount Google Drive in the kernel and create the SDXLR folders."""
+    from sdxlr import drive
+    return drive.mount(root or drive.ROOT)
 
 
 def hf_token() -> str | None:
