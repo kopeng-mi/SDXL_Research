@@ -135,8 +135,7 @@ def main() -> None:
         "general": {"resolution": [res, res], "caption_extension": ".txt", "batch_size": int(c["batch_size"]),
                     "enable_bucket": True, "bucket_no_upscale": True},
         "datasets": [{"image_directory": str(a.images), "cache_directory": str(cache),
-                      "num_repeats": int(c["repeats"]),
-                      "flip_aug": bool(c.get("flip_aug", plan.SUBJECTS[a.subject]["flip"]))}],
+                      "num_repeats": int(c["repeats"])}],  # musubi has no flip_aug (SDXL only)
     }
     ds = out / "dataset.toml"
     ds.write_text(toml.dumps(dataset))
