@@ -116,7 +116,7 @@ STYLES (prompt templates; `{cls}`, `{n}`):
 
 ### train-test-sdxl / train-test-zimage (same shape)
 1. **Dataset**: `DS` from Drive, then `drive.pull`. If captions are missing, caption here (style id-sdxl / id-zimage).
-2. **Settings**: `BASE` (catalog \| link), `PRESET` (Fast \| Best), `RUN`, `TRIGGER`, `CLASS_WORD`, `EPOCHS`/`REPEATS` (0 = auto), `DIM`, `LR` (blank = preset), `RESUME`; zimage also `TE`. Prints the plan: steps, ETA, VRAM fit (from `plan.py`).
+2. **Settings**: `BASE` (catalog \| link), `SUBJECT`, `PRESET` (Fast \| Best), `RUN`, `TRIGGER`, `CLASS_WORD`, `EPOCHS`/`REPEATS` (0 = auto), `DIM`, `LR` (blank = preset), `RESUME`; zimage also `TE`. Prints the plan: steps, ETA, VRAM fit (from `plan.py`).
 3. **Train**: `-m sdxlr.train[_zimage] --name RUN --images LOCAL --preset sdxl_fast|sdxl_best --model BASE --drive-out DRIVE/loras/<kind>/RUN --resume`.
 4. **Test**: `-m sdxlr.compare --epochs last:3 --strengths 0.6 0.8 1.0 --prompts P1 P2 --seed 42 --drive-out ...`. Shows the grid inline. Z tests run on Turbo (unsloth 4-bit) with the training TE.
 5. **Pick**: `PICK_EPOCH` copies that epoch to `loras/<kind>/RUN/RUN.safetensors` (+ sidecar). The app and Fooocus list it.
@@ -157,11 +157,28 @@ App changes:
   - SDXL Best `V* = 990` (11·6·15), so `R = clamp(round(V*/(N·E)), 1, 20)`;
   - Z Best `V* = 440` (11·4·10).
   - Fewer photos get more repeats, more photos fewer.
+  - Big sets: when `R = 1` still gives `N·E > 1.5·V*`, epochs shrink too: `E = clamp(round(V*/N), 4, E)`.
+    Example (SDXL, E 15): N 11 gives R 6; N 40 gives R 2; N 200 gives R 1, E 5 (≈ 1000 views, 335 steps).
+  - Below 5 photos the form warns: identity is weak and the LoRA overfits faster.
+- **Subject type** (form field `SUBJECT`, sets caption style, V* and aug):
+  | SUBJECT | captions | V* SDXL / Z | flip_aug | note |
+  |---|---|---|---|---|
+  | person (measured) | id-* (no face/body words) | 990 / 440 | off | faces are asymmetric |
+  | character/object | id-* with "the {cls}" | 990 / 440 | off | est, same as person |
+  | style | detailed (describe content, not style) | 1500 / 660 | on | est; TE lr 0 for SDXL |
+  | concept/pose | detailed | 1200 / 530 | on | est |
+  Non-person rows are starting points marked "est" until a real run confirms them.
+- **Image checks at import** (`data.py`, printed and then kept or skipped):
+  - min side < `0.5·res`: flagged (it is upscaled into a bucket and comes out soft);
+  - exact duplicates: dropped (sha1, already done);
+  - EXIF rotation: applied;
+  - mixed aspect ratios: fine (buckets, area = res², side step 64 for SDXL and 16 for Z).
+  - The plan cell prints the bucket spread so one odd bucket with a single image is visible.
 - Step time: `t = t0 · (res/res0)² · (B/B0)`.
   - t0 is measured on T4: SDXL (1024, B3) 5.1 s; Z (512, B1) 5.7 s.
   - P6 replaces this with a table of measured points; anything else is marked "est".
 - ETA: `S·t + overhead` (SDXL 120 s, Z 300 s; first run adds the download, `GB / 0.1 GB/s` est).
-- Best totals at N = 11:
+- Best totals at N = 11 (other N: steps stay near these, because V* is fixed):
   - SDXL: S = 22·15 = 330, so 330·5.1 + 120 ≈ **30 min**;
   - Z: S = 44·10 = 440, so 440·5.7 + 300 ≈ **47 min**.
 - LoRA scale = `(alpha/dim) · strength` (SDXL 16/24 = 0.667). Changing dim keeps alpha/dim, so the LR needs no retune.
