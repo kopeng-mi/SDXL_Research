@@ -95,16 +95,28 @@ def load_secrets() -> dict[str, bool]:
     return found
 
 
-def show_images(paths: list[str | Path], width: int = 256, captions: bool = True) -> None:
-    """Thumbnails in the cell, each with its .txt caption below (kernel side, no PIL)."""
+def _thumb(p: Path, side: int) -> bytes:
+    """Small JPEG of a photo (the Colab kernel has Pillow), so the notebook stays light."""
+    import io
+    from PIL import Image, ImageOps
+    with Image.open(p) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((side, side))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+def show_images(paths: list[str | Path], width: int = 256, captions: str | Path | bool = True) -> None:
+    """Thumbnails in the cell, each with its .txt caption below (next to the image, or in the `captions` dir)."""
     import base64
     import html
     from IPython.display import HTML, display  # type: ignore
     parts = []
     for p in map(Path, paths):
-        mime = "png" if p.suffix.lower() == ".png" else "jpeg"
-        img = base64.b64encode(p.read_bytes()).decode()
-        txt = p.with_suffix(".txt")
+        img = base64.b64encode(_thumb(p, width * 2)).decode()
+        mime = "jpeg"
+        txt = Path(captions) / f"{p.stem}.txt" if isinstance(captions, (str, Path)) else p.with_suffix(".txt")
         cap = html.escape(txt.read_text(encoding="utf-8")) if captions and txt.exists() else ""
         parts.append(f'<figure style="display:inline-block;width:{width}px;margin:4px;vertical-align:top">'
                      f'<img src="data:image/{mime};base64,{img}" style="width:100%"/>'
