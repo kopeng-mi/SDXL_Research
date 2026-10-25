@@ -1,13 +1,17 @@
 """Create the shared uv venv on Colab. Stdlib only: runs on the system Python.
 
-Usage (from the notebook):  python -m sdxlr.bootstrap  (with src/ on PYTHONPATH)
+Usage (from the notebook):  python -m sdxlr.bootstrap --groups caption,train-sdxl  (src/ on PYTHONPATH)
 
-Idempotent: a stamp file records a hash of the install inputs, so a re-run in
-the same session is a no-op unless pyproject.toml or the kohya pin changed.
+Groups only add packages on top of core (our pinned deps), so one VM can run
+several notebooks with one venv:  caption (core only), train-sdxl (kohya),
+train-z (musubi), app (nicegui). Idempotent: the stamp records a hash of the
+install inputs and the groups installed; a re-run is a no-op unless an input
+changed or a new group is asked for.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import os
 import shutil
@@ -22,6 +26,7 @@ VENV = Path(os.environ.get("SDXLR_VENV", "/content/venv"))
 VENV_PY = VENV / "bin" / "python"
 PYTHON = "3.12"  # uv-managed, never the Colab system Python (it changes often)
 STAMP = VENV / ".sdxlr-stamp"
+GROUPS = ("caption", "train-sdxl", "train-z", "app")
 
 
 def _uv() -> str:
@@ -39,11 +44,21 @@ def _inputs_hash() -> str:
     return h.hexdigest()[:16]
 
 
-def ensure_venv() -> Path:
+def _stamp() -> tuple[str, set[str]]:
+    try:
+        h, _, gs = STAMP.read_text().strip().partition(" ")
+        return h, set(filter(None, gs.split(",")))
+    except OSError:
+        return "", set()
+
+
+def ensure_venv(groups: set[str] = frozenset()) -> Path:
     want = _inputs_hash()
-    if STAMP.exists() and STAMP.read_text().strip() == want:
-        print(f"venv ok: {VENV} ({want})")
+    have_hash, have = _stamp()
+    if have_hash == want and groups <= have:
+        print(f"venv ok: {VENV} ({want}, groups: {','.join(sorted(have)) or 'core'})")
         return VENV_PY
+    groups = set(groups) | (have if have_hash == want else set())
 
     uv = _uv()
     if not VENV_PY.exists():
@@ -54,17 +69,24 @@ def ensure_venv() -> Path:
 
     # kohya first (its -e . must resolve inside its own dir), then ours, which
     # pins the shared versions on top.
-    pip("-r", "requirements.txt", cwd=KOHYA)
-    pip("-e", str(MUSUBI))  # same diffusers/transformers/accelerate pins as kohya
-    pip("-e", str(REPO))
+    if "train-sdxl" in groups:
+        pip("-r", "requirements.txt", cwd=KOHYA)
+    if "train-z" in groups:
+        pip("-e", str(MUSUBI))  # same diffusers/transformers/accelerate pins as kohya
+    pip("-e", f"{REPO}[app]" if "app" in groups else str(REPO))
 
-    STAMP.write_text(want)
-    print(f"venv ready: {VENV} ({want})")
+    STAMP.write_text(f"{want} {','.join(sorted(groups))}")
+    print(f"venv ready: {VENV} ({want}, groups: {','.join(sorted(groups)) or 'core'})")
     return VENV_PY
 
 
 if __name__ == "__main__":
-    ensure_venv()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--groups", default="", help=f"comma list of {', '.join(GROUPS)}")
+    gs = {g.strip() for g in ap.parse_args().groups.split(",") if g.strip()}
+    if bad := gs - set(GROUPS):
+        sys.exit(f"unknown groups: {', '.join(sorted(bad))} (choose from {', '.join(GROUPS)})")
+    ensure_venv(gs)
     subprocess.run([str(VENV_PY), "-c",
                     "import torch, diffusers, transformers; "
                     "print('torch', torch.__version__, '| cuda', torch.cuda.is_available(), "

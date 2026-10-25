@@ -28,7 +28,7 @@ else:
 # so this kernel never holds VRAM.
 sys.path.insert(0, str(REPO / "src"))
 from sdxlr import nb
-r = subprocess.run([sys.executable, "-m", "sdxlr.bootstrap"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+r = subprocess.run([sys.executable, "-m", "sdxlr.bootstrap", "--groups", "caption,train-sdxl,train-z,app"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                    env={**os.environ, "PYTHONPATH": str(REPO / "src")})
 print(r.stdout[-3000:])
 assert r.returncode == 0, "setup failed (see above)"
