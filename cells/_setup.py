@@ -4,7 +4,7 @@
 #
 # 1. **Runtime > Change runtime type > T4 GPU**
 # 2. **Secrets** (key icon, left), allow notebook access: `HF_TOKEN` (gated or private repos),
-#    `CIVITAI_TOKEN` (Civitai downloads), `TS_AUTHKEY` (Tailscale, tick Reusable + Ephemeral; only the app notebooks).
+#    `CIVITAI_TOKEN` (Civitai downloads)__TS_LINE__.
 # 3. Run **Setup** (re-runs skip finished steps), then the cells below in order.
 # %%
 #@title Setup: repo, venv, secrets, Drive
@@ -36,6 +36,6 @@ if GROUPS is not None:
     print(r.stdout[-3000:])
     assert r.returncode == 0, "setup failed (see above)"
 found = nb.load_secrets()
-print("secrets:", ", ".join(f"{k} {'found' if v else 'missing'}" for k, v in found.items()))
+print("secrets:", ", ".join(f"{k} {'found' if v else 'missing'}" for k, v in found.items() if k in __SECRETS__))
 ROOT = nb.drive_mount(DRIVE_ROOT) if USE_DRIVE else None
 print("drive:", ROOT or "off")

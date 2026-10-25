@@ -33,6 +33,11 @@ NOTEBOOKS = {
 }
 
 
+APPS = ("sdxl", "zimage")  # only these open over Tailscale
+SECRETS = ("HF_TOKEN", "CIVITAI_TOKEN")
+TS_LINE = ", `TS_AUTHKEY` (Tailscale, tick Reusable + Ephemeral)"
+
+
 def _lines(text: str) -> list[str]:
     lines = text.strip("\n").split("\n")
     return [line + "\n" for line in lines[:-1]] + [lines[-1]]
@@ -78,7 +83,9 @@ def build() -> dict[Path, str]:
     setup = (CELLS / "_setup.py").read_text(encoding="utf-8")
     for name, (title, intro, groups, drive) in NOTEBOOKS.items():
         head = (setup.replace("__TITLE__", title).replace("__INTRO__", intro)
-                .replace("__GROUPS__", repr(groups)).replace("__DRIVE__", str(drive)))
+                .replace("__GROUPS__", repr(groups)).replace("__DRIVE__", str(drive))
+                .replace("__TS_LINE__", TS_LINE if name in APPS else "")
+                .replace("__SECRETS__", repr(SECRETS + (("TS_AUTHKEY",) if name in APPS else ()))))
         srcs = [("setup", head)] + [(p.stem, p.read_text(encoding="utf-8"))
                                     for p in sorted((CELLS / name).glob("*.py"))]
         out[OUT_DIR / f"{name}.ipynb"] = _nb(_cells(srcs))

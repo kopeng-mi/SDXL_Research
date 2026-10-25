@@ -7,7 +7,7 @@
 # %%
 #@title Dataset
 DS_NAME = "my_dataset"  #@param {type:"string"}
-UPLOAD_ZIP = False  #@param {type:"boolean"}
+UPLOAD_ZIP = True  #@param {type:"boolean"}
 SRC = ""  #@param {type:"string"}
 #@markdown SRC: comma list of .zip links, HF files `org/repo/file.zip`, or Drive paths (optional).
 CAPTION_MISSING = True  #@param {type:"boolean"}
