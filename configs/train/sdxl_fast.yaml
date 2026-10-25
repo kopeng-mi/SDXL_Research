@@ -1,0 +1,32 @@
+# Fast SDXL LoRA (est until a T4 run measures it): 768px (0.56x the pixels of 1024),
+# text encoders frozen and their outputs cached, fewer epochs. Same LR and dim as sdxl_person.
+model: stabilityai/stable-diffusion-xl-base-1.0/sd_xl_base_1.0.safetensors
+hf_repo: null
+
+resolution: 768
+repeats: 0             # 0 = auto from the image count (plan.auto)
+epochs: 10
+batch_size: 3
+save_every: 1
+keep_last: 10
+seed: 42
+
+lora_type: LoRA
+network_dim: 24
+network_alpha: 16
+conv_dim: 16
+conv_alpha: 8
+
+optimizer: AdamW8bit
+unet_lr: 2.0e-4
+text_encoder_lr: 0     # frozen: lets kohya cache the text encoder outputs
+lr_scheduler: cosine_with_restarts
+lr_cycles: 3
+lr_warmup_ratio: 0.05
+
+full_fp16: true
+min_snr_gamma: 5
+ip_noise_gamma: 0.1
+multires_noise: true
+
+shuffle_caption: false

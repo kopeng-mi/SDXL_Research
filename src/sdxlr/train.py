@@ -2,8 +2,13 @@
 
   python -m sdxlr.train --name myrun --images DIR [--set key=value ...]
 
-Defaults come from configs/train/sdxl_person.yaml (proven T4 settings).
+Presets: --preset best (configs/train/sdxl_person.yaml, proven T4 settings) or
+fast (sdxl_fast.yaml). repeats 0 = auto from the image count and --subject
+(plan.auto); v-pred bases (NoobAI v-pred) are detected from the file header.
 Training runs as a child process; when it exits all VRAM/RAM is released.
+
+Drive: with --drive ROOT every saved epoch is copied to ROOT/loras/sdxl/NAME and
+the newest state to ROOT/state/NAME; --resume continues from that state.
 
 Auto resume: with --hf-repo and --resume, the dataset and the latest LoRA +
 state go to that private repo (hfsync.py keeps only the newest checkpoint);
@@ -22,13 +27,15 @@ from pathlib import Path
 import toml
 import yaml
 
-from . import hfsync, loraformat
+from . import drive, hfsync, loraformat, plan
 from .fetch import MODELS, fetch
+from .paths import SDXL_BASES
 
 REPO = Path(__file__).resolve().parents[2]
 KOHYA = REPO / "vendor" / "sd-scripts"
 PRESETS = REPO / "configs" / "train"
 WORK = Path("/content/work")
+PRESET_FILES = {"best": "sdxl_person", "fast": "sdxl_fast"}
 
 
 def _cast(v: str):
@@ -40,7 +47,7 @@ def _cast(v: str):
     return {"true": True, "false": False, "none": None}.get(v.lower(), v)
 
 
-def build_configs(c: dict, model: Path, images: Path, out: Path) -> tuple[Path, Path]:
+def build_configs(c: dict, model: Path, images: Path, out: Path, vpred: bool = False) -> tuple[Path, Path]:
     module_args = []
     if c["lora_type"] == "LoCon":
         module_args = [f"conv_dim={c['conv_dim']}", f"conv_alpha={c['conv_alpha']}"]
@@ -80,6 +87,11 @@ def build_configs(c: dict, model: Path, images: Path, out: Path) -> tuple[Path, 
             "max_data_loader_n_workers": 1,
             "persistent_data_loader_workers": True,
             "lowram": False,
+            "v_parameterization": vpred or None,
+            "zero_terminal_snr": vpred or None,
+            # frozen text encoders: encode the captions once (needs unshuffled captions)
+            "cache_text_encoder_outputs": (c["text_encoder_lr"] == 0 and not c["shuffle_caption"]) or None,
+            "cache_text_encoder_outputs_to_disk": (c["text_encoder_lr"] == 0 and not c["shuffle_caption"]) or None,
             "min_snr_gamma": c["min_snr_gamma"] or None,
             "ip_noise_gamma": c["ip_noise_gamma"] or None,
             "multires_noise_iterations": 6 if c["multires_noise"] else None,
@@ -92,7 +104,7 @@ def build_configs(c: dict, model: Path, images: Path, out: Path) -> tuple[Path, 
             "save_precision": "fp16",
             "save_every_n_epochs": c["save_every"],
             "save_last_n_epochs": c["keep_last"],
-            "save_state": bool(c.get("hf_repo")),
+            "save_state": bool(c.get("hf_repo") or c.get("drive")),
             "save_last_n_epochs_state": 1,
             "logging_dir": str(out / "logs"),
         },
@@ -111,7 +123,7 @@ def build_configs(c: dict, model: Path, images: Path, out: Path) -> tuple[Path, 
             "bucket_no_upscale": True,
             "min_bucket_reso": 256,
             "max_bucket_reso": 2048,
-            "flip_aug": False,
+            "flip_aug": bool(c.get("flip_aug")),
         },
         "datasets": [{"subsets": [{"image_dir": str(images), "num_repeats": c["repeats"]}]}],
     }
@@ -125,8 +137,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
     ap.add_argument("--images", type=Path, required=True, help="images + .txt captions")
-    ap.add_argument("--preset", default="sdxl_person")
-    ap.add_argument("--model", help="override preset model: org/repo/file, URL or path")
+    ap.add_argument("--preset", default="best", help="best | fast | a configs/train/*.yaml name")
+    ap.add_argument("--model", help=f"base: {', '.join(SDXL_BASES)}, org/repo/file, URL or path")
+    ap.add_argument("--subject", default="person", choices=list(plan.SUBJECTS))
+    ap.add_argument("--drive", type=Path, help="Drive root: epochs + resume state are kept there")
     ap.add_argument("--hf-repo", help="private HF repo for LoRAs + resume state")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--trigger", default="", help="trigger word, saved next to each LoRA")
@@ -134,31 +148,50 @@ def main() -> None:
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE")
     a = ap.parse_args()
 
-    c = yaml.safe_load((PRESETS / f"{a.preset}.yaml").read_text())
+    c = yaml.safe_load((PRESETS / f"{PRESET_FILES.get(a.preset, a.preset)}.yaml").read_text())
     c |= {k: _cast(v) for k, v in (s.split("=", 1) for s in a.set)}
-    c["name"], c["hf_repo"] = a.name, a.hf_repo or c.get("hf_repo")
+    c["name"], c["hf_repo"], c["drive"] = a.name, a.hf_repo or c.get("hf_repo"), a.drive
     if a.model:
-        c["model"] = a.model
+        c["model"] = SDXL_BASES.get(a.model, a.model)
+    sub = plan.SUBJECTS[a.subject]
+    c["flip_aug"] = c.get("flip_aug", sub["flip"])
+    if a.subject == "style":
+        c["text_encoder_lr"] = 0  # a style lives in the U-Net; frozen TEs also allow caching
 
-    if a.resume and not c["hf_repo"]:
-        sys.exit("--resume needs --hf-repo")
-    if a.resume and not any(a.images.glob("*")) and not hfsync.pull_dataset(c["hf_repo"], a.name, a.images):
+    if a.resume and not (c["hf_repo"] or a.drive):
+        sys.exit("--resume needs --drive or --hf-repo")
+    if a.resume and c["hf_repo"] and not any(a.images.glob("*")) and not hfsync.pull_dataset(c["hf_repo"], a.name, a.images):
         sys.exit(f"no images in {a.images} and none in {c['hf_repo']}/{a.name}/dataset")
     caps = list(a.images.glob("*.txt"))
     imgs = [p for p in a.images.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}]
     if not imgs:
         sys.exit(f"no images in {a.images}")
-    print(f"{len(imgs)} images, {len(caps)} captions", flush=True)
+    p = plan.train("sdxl", a.subject, len(imgs), int(c["resolution"]), int(c["batch_size"]), int(c["epochs"]),
+                   int(c["repeats"]))
+    c["repeats"], c["epochs"] = p.repeats, p.epochs
+    print(f"{len(imgs)} images, {len(caps)} captions\n{p.summary()}", flush=True)
 
     out = WORK / "runs" / a.name
     out.mkdir(parents=True, exist_ok=True)
     model = fetch(c["model"], MODELS)
-    cfg, ds = build_configs(c, model, a.images, out)
+    vpred = loraformat.is_vpred(model)
+    if vpred:
+        print("v-prediction base: training with v_parameterization + zero_terminal_snr", flush=True)
+    cfg, ds = build_configs(c, model, a.images, out, vpred)
 
     cmd = [sys.executable, "-u", str(KOHYA / "sdxl_train_network.py"),
            f"--config_file={cfg}", f"--dataset_config={ds}"]
-    pusher = None
-    if a.resume:
+    pusher = syncer = None
+    if a.drive:
+        d_out, d_state = a.drive / "loras" / "sdxl" / a.name, a.drive / "state" / a.name
+        if a.resume:
+            found, n = drive.resume(d_state, out / "resume", a.name)
+            print(f"resume from {found.name} ({n} epochs done)" if found else "no saved state, starting fresh", flush=True)
+            if found:
+                cmd.append(f"--resume={found}")
+        syncer = drive.Syncer(out, a.name, d_out, d_state)
+        syncer.start()
+    elif a.resume:
         found = hfsync.pull_latest(c["hf_repo"], a.name, out / "resume")
         print(f"resume from {found[0]} ({found[1]} epochs done)" if found else "no saved state, starting fresh", flush=True)
         if found:
@@ -172,9 +205,11 @@ def main() -> None:
     rc = subprocess.run(cmd, cwd=KOHYA, env={**os.environ, "PYTHONUNBUFFERED": "1"}).returncode
     if pusher:
         pusher.finish()
-    steps = -(-len(imgs) * int(c["repeats"]) * int(c["epochs"]) // max(1, int(c["batch_size"])))
     loraformat.write_sidecars(out, trigger=a.trigger, class_word=a.class_word, dataset=a.images.name, base=str(c["model"]),
-                              steps=steps, kind="sdxl")  # the UI reads these first
+                              steps=p.steps, kind="sdxl", subject=a.subject, vpred=vpred)  # the UI reads these first
+    if syncer:
+        syncer.stop()
+        drive.mirror_new(out, a.drive / "loras" / "sdxl" / a.name, "*.json", settle=0)
     print(f"LoRAs in {out}: {sorted(p.name for p in out.glob('*.safetensors'))}", flush=True)
     sys.exit(rc)
 
