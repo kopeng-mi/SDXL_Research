@@ -5,7 +5,9 @@
 SRC can be: 'test' (5 public photos), a .zip / folder / image path (uploads,
 Drive), an https URL, or an HF file 'org/repo/file.zip' (dataset or model repo).
 Zips may contain captions (.txt next to each image) or not; nested folders are
-flattened. Images are never resized here (the trainers bucket them).
+flattened. Images are never resized here (the trainers bucket them); phone
+photos with an EXIF rotation are saved upright, since the trainers ignore EXIF.
+--res/--kind print the checks: images too small for that size, and the bucket spread.
 """
 
 from __future__ import annotations
@@ -84,6 +86,11 @@ def _copy_tree(src: Path, dest: Path, seen: dict[str, str]) -> tuple[int, int, i
                 continue
             name = _free_name(dest, p.with_suffix(".jpg").name)
             load_source(p).save(dest / name, quality=95)
+        elif _rotated(p):
+            from PIL import Image, ImageOps
+            name = _free_name(dest, p.name)
+            with Image.open(p) as im:
+                ImageOps.exif_transpose(im).save(dest / name, quality=95)
         else:
             name = _free_name(dest, p.name)
             shutil.copy2(p, dest / name)
@@ -94,6 +101,40 @@ def _copy_tree(src: Path, dest: Path, seen: dict[str, str]) -> tuple[int, int, i
             shutil.copy2(cap, (dest / name).with_suffix(".txt"))
             n_txt += 1
     return n_img, n_txt, n_dup
+
+
+def _rotated(p: Path) -> bool:
+    """True when EXIF says the photo must be turned (orientation 2..8)."""
+    try:
+        from PIL import Image
+        with Image.open(p) as im:
+            return im.getexif().get(0x0112, 1) not in (0, 1)
+    except Exception:
+        return False
+
+
+def check(dest: Path, kind: str, res: int) -> str:
+    """Plain report: count, images too small for `res`, and how they spread over buckets."""
+    from PIL import Image
+
+    from . import plan
+    sizes, small = [], []
+    for p in sorted(dest.iterdir()):
+        if p.suffix.lower() in IMG:
+            with Image.open(p) as im:
+                sizes.append(im.size)
+            if plan.too_small(*im.size, res):
+                small.append(f"{p.name} {im.size[0]}x{im.size[1]}")
+    lines = [f"{len(sizes)} images checked for {kind} at {res}px"]
+    if len(sizes) < plan.MIN_PHOTOS:
+        lines.append(f"warning: only {len(sizes)} photos (5+ recommended)")
+    if small:
+        lines.append(f"{len(small)} smaller than {res // 2}px on the short side (they come out soft): " + ", ".join(small))
+    b = plan.buckets(sizes, kind, res)
+    lines.append("buckets: " + ", ".join(f"{w}x{h}: {n}" for (w, h), n in b.items()))
+    if any(n == 1 for n in b.values()) and len(b) > 1:
+        lines.append("note: a bucket with 1 image trains that shape with batch 1 (fine, just slower)")
+    return "\n".join(lines)
 
 
 def import_sources(sources: list[str], dest: Path) -> str:
@@ -122,9 +163,14 @@ def import_sources(sources: list[str], dest: Path) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dest", type=Path, required=True)
-    ap.add_argument("sources", nargs="+")
+    ap.add_argument("sources", nargs="*")
+    ap.add_argument("--res", type=int, default=0, help="print the checks for this training size")
+    ap.add_argument("--kind", default="sdxl", choices=["sdxl", "zimage"])
     a = ap.parse_args()
-    print(import_sources(a.sources, a.dest), flush=True)
+    if a.sources:
+        print(import_sources(a.sources, a.dest), flush=True)
+    if a.res:
+        print(check(a.dest, a.kind, a.res), flush=True)
 
 
 if __name__ == "__main__":
