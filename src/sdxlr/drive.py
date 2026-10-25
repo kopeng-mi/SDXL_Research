@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shutil
 import threading
+import time
 from pathlib import Path
 
 MOUNT = "/content/drive"
@@ -121,25 +122,40 @@ def resume(drive_state: str | Path, local_out: str | Path, name: str) -> tuple[P
     return dst, done(src.name, name)
 
 
-class StatePusher(threading.Thread):
-    """Background: push the newest state every PUSH_EVERY seconds; `stop()` does a final push."""
+def mirror_new(local_out: str | Path, drive_dir: str | Path, pattern: str = "*.safetensors", settle: float = 10) -> int:
+    """Copy finished files (unchanged for `settle` s) that Drive lacks; returns how many."""
+    n, now = 0, time.time()
+    for f in sorted(Path(local_out).glob(pattern)):
+        if now - f.stat().st_mtime >= settle and not _same(f, Path(drive_dir) / f.name):
+            n += mirror(f, drive_dir) is not None
+    return n
 
-    def __init__(self, local_out: str | Path, drive_state: str | Path, name: str, every: float = PUSH_EVERY):
+
+class Syncer(threading.Thread):
+    """Background while training: every PUSH_EVERY s copy new epoch files to `drive_out` and the
+    newest state to `drive_state`; `stop()` does a final pass."""
+
+    def __init__(self, local_out: str | Path, name: str, drive_out: str | Path | None = None,
+                 drive_state: str | Path | None = None, pattern: str = "*.safetensors", every: float = PUSH_EVERY):
         super().__init__(daemon=True)
-        self.args, self.every, self._stop_ev = (local_out, drive_state, name), every, threading.Event()
+        self.local, self.name, self.out, self.state, self.pattern = Path(local_out), name, drive_out, drive_state, pattern
+        self.every, self._stop_ev = every, threading.Event()
 
-    def _push(self) -> None:
+    def _pass(self, settle: float) -> None:
         try:
-            if (p := push_state(*self.args)) is not None:
-                print(f"drive: state {p.name} saved", flush=True)
+            if self.out and (n := mirror_new(self.local, self.out, self.pattern, settle)):
+                print(f"drive: {n} LoRA file(s) saved", flush=True)
+            if self.state:
+                Path(self.state).mkdir(parents=True, exist_ok=True)
+                if (p := push_state(self.local, self.state, self.name)) is not None:
+                    print(f"drive: state {p.name} saved", flush=True)
         except OSError as e:
-            print(f"drive: state push failed ({e})", flush=True)
+            print(f"drive: sync failed ({e})", flush=True)
 
     def run(self) -> None:
         while not self._stop_ev.wait(self.every):
-            self._push()
+            self._pass(10)
 
     def stop(self) -> None:
         self._stop_ev.set()
-        self._push()
-
+        self._pass(0)

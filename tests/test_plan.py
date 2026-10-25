@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from sdxlr import drive, plan  # noqa: E402
+from sdxlr import drive, loraformat, plan  # noqa: E402
 
 
 def test_auto_repeats_keep_views() -> None:
@@ -77,6 +77,36 @@ def test_drive_sync() -> None:
     assert n == 4 and (local / "x.bin").read_text() == "me-000004-state"
     assert drive.done("me_r4-000002-state", "me") == 6
     assert drive.resume(tmp / "none", tmp / "local", "me") == (None, 0)
+
+    (out / "me-000004.safetensors").write_text("w")
+    assert drive.mirror_new(out, tmp / "loras") == 0  # still being written
+    s = drive.Syncer(out, "me", tmp / "loras", tmp / "st2", every=999)
+    s.stop()
+    assert (tmp / "loras" / "me-000004.safetensors").exists() and (tmp / "st2" / "me-000004-state").exists()
+
+
+
+def _st(path: Path, keys: list[str]) -> None:
+    import json
+    import struct
+    head = json.dumps({k: {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]} for k in keys}).encode()
+    path.write_bytes(struct.pack("<Q", len(head)) + head + b"\0\0")
+
+
+def test_vpred_and_pick() -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="sdxlr_pick_test_"))
+    _st(tmp / "v.safetensors", ["v_pred", "ztsnr", "model.diffusion_model.x"])
+    _st(tmp / "e.safetensors", ["model.diffusion_model.x"])
+    assert loraformat.is_vpred(tmp / "v.safetensors") and not loraformat.is_vpred(tmp / "e.safetensors")
+    run = tmp / "run"
+    run.mkdir()
+    for f in ("me-000001", "me-000002", "me"):
+        _st(run / f"{f}.safetensors", ["x"])
+    (run / "me-000002.json").write_text("{}")
+    assert [e for e, _ in loraformat.pick_epochs(run, "last:2")] == [2, 3]
+    assert loraformat.pick(run, 2, tmp / "out", "me").name == "me_e2.safetensors"
+    assert (tmp / "out" / "me_e2.json").exists()
+    assert loraformat.pick(run, 0, tmp / "out", "me").name == "me_e3.safetensors"
 
 
 if __name__ == "__main__":
