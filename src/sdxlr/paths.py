@@ -58,6 +58,19 @@ Z_ENCODERS = {
 }
 TE_GB = {"nf4": 2.5, "int8": 4.4, "fp16": 7.9, "prequant": 3.4}  # download size of the text encoder variants
 # ControlNet lite files (8 steps, ~1.9 GB each): "union" gives the better inpaint blend, "tile" refines upscale tiles
+# captioners: key -> (repo, params in billions (fp16 vs nf4 is picked from this), loader)
+CAPTIONERS = {
+    "qwen3vl-2b": ("Qwen/Qwen3-VL-2B-Instruct", 2.1, "qwen"),
+    "qwen3vl-4b": ("Qwen/Qwen3-VL-4B-Instruct", 4.4, "qwen"),
+    "qwen3vl-4b-abl": ("huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated", 4.4, "qwen"),
+    "qwen3vl-8b-abl": ("huihui-ai/Huihui-Qwen3-VL-8B-Instruct-abliterated", 8.8, "qwen"),
+    "qwen35-4b-abl (exp)": ("huihui-ai/Huihui-Qwen3.5-4B-abliterated", 4.5, "qwen"),
+    "qwen35-9b-abl (exp)": ("huihui-ai/Huihui-Qwen3.5-9B-abliterated", 9.6, "qwen"),
+    "joy": ("fancyfeast/llama-joycaption-beta-one-hf-llava", 8.5, "joy"),  # uncensored by design
+    "wd": ("SmilingWolf/wd-eva02-large-tagger-v3", 0.3, "wd"),
+}
+CAPTIONER_ALIASES = {"qwen": "qwen3vl-4b", "qwen-2b": "qwen3vl-2b"}
+
 CONTROLNETS = {
     "union": ("alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1", "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors"),
     "tile": ("alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1", "Z-Image-Turbo-Fun-Controlnet-Tile-2.1-lite-2601-8steps.safetensors"),
