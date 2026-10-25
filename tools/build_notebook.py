@@ -2,7 +2,6 @@
 
 notebooks/<nb>.ipynb = the shared cells/_setup.py (title, intro, venv groups and
 Drive default filled in from NOTEBOOKS) + cells/<nb>/NN_name.py in filename order.
-The legacy notebook.ipynb is still built from cells/NN_name.py until step 5 removes it.
 A file may start with a markdown block fenced by `# %% [md]` ... `# %%`; that block
 becomes a markdown cell placed before the code cell.
 
@@ -19,7 +18,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CELLS = ROOT / "cells"
 OUT_DIR = ROOT / "notebooks"
-LEGACY = ROOT / "notebook.ipynb"
 
 # name -> title, intro line, venv groups (None = no shared venv), Drive on by default
 NOTEBOOKS = {
@@ -76,8 +74,7 @@ def _nb(cells: list[dict]) -> str:
 
 
 def build() -> dict[Path, str]:
-    out = {LEGACY: _nb(_cells([(p.stem, p.read_text(encoding="utf-8"))
-                               for p in sorted(CELLS.glob("[0-9]*.py"))]))}
+    out = {}
     setup = (CELLS / "_setup.py").read_text(encoding="utf-8")
     for name, (title, intro, groups, drive) in NOTEBOOKS.items():
         head = (setup.replace("__TITLE__", title).replace("__INTRO__", intro)

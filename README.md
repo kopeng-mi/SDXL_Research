@@ -1,19 +1,20 @@
 # SDXL_Research
 
-One notebook for the Google Colab free tier (T4): caption a dataset, train identity LoRAs for SDXL and
-Z-Image, compare them, and generate or edit images in a web app you open over Tailscale.
+Five Colab notebooks for the free tier (T4): caption a dataset, train and test SDXL and Z-Image LoRAs,
+and generate with Fooocus (SDXL) or our Z-Image app, both opened over Tailscale. Datasets and LoRAs live
+on your Google Drive (`MyDrive/SDXLR`).
 
-- **Generate**: Z-Image Turbo (GGUF Q8) or any SDXL checkpoint, Quality/Speed/Fast modes, LoRA mixes with
-  trigger chips, live previews.
-- **Edit**: paint the part to change, change the whole image, extend the canvas, upscale (with an optional
-  Z-Image ControlNet "better blend" and tile model). Pixels outside the painted area stay exactly as they were.
-- **Train**: SDXL (kohya sd-scripts) or Z-Image (musubi-tuner) LoRAs from your photos, with Qwen3-VL or WD
-  captions; compare epochs and strengths in a grid.
-- Built for 15 GB VRAM and 12.7 GB RAM: the image engine runs in its own process with a RAM guard, so the
-  Colab session survives memory trouble.
+| notebook | what it does |
+|---|---|
+| `notebooks/captioning.ipynb` | import photos to Drive, caption them (Qwen3-VL incl. abliterated, JoyCaption, WD tags), review |
+| `notebooks/train-test-sdxl.ipynb` | SDXL LoRA (kohya): Fast/Best presets, auto repeats, v-pred bases, resume from Drive, epoch grid |
+| `notebooks/train-test-zimage.ipynb` | Z-Image LoRA (musubi): Base or Turbo+adapter, text encoder choice, resume, epoch grid |
+| `notebooks/sdxl.ipynb` | Fooocus 2.5.5 with your checkpoints and LoRAs at http://sdxl:7865 |
+| `notebooks/zimage.ipynb` | Z-Image generate, edit, upscale, "Write a detailed prompt", custom checkpoints, at http://zimage:7860 |
 
-Open `notebook.ipynb` in Colab and follow its two cells (Setup, Launch). Notes for developers: `docs/`.
+Open one in Colab (from the `step5-notebooks` branch), run **Setup**, then the cells in order.
+Notes for developers: `docs/` (plan: `docs/NOTEBOOKS_PLAN.md`); cells are built from `cells/` by `tools/build_notebook.py`.
 
 ## Privacy
 
-Code only. Datasets, LoRAs and outputs live on the Colab VM and in your own **private** Hugging Face repos.
+Code only. Datasets, LoRAs and outputs live on the Colab VM and in your own Google Drive.
