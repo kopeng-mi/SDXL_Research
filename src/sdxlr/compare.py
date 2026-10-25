@@ -107,7 +107,8 @@ def main() -> None:
     out = OUT / a.name
     out.mkdir(parents=True, exist_ok=True)
     state_f = out / "state.json"
-    params = {k: v for k, v in vars(a).items() if k not in ("fresh", "name")}
+    # as JSON sees it (paths become strings), so a re-run compares equal and resumes
+    params = json.loads(json.dumps({k: v for k, v in vars(a).items() if k not in ("fresh", "name")}, default=str))
     state = json.loads(state_f.read_text()) if state_f.exists() and not a.fresh else {}
     if state.get("params") != params:
         state = {"params": params, "cells": {}, "errors": {}}
