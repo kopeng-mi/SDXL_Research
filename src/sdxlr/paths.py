@@ -38,6 +38,14 @@ WEIGHTS = {".safetensors", ".gguf", ".ckpt"}
 
 FP16_VAE = "madebyollin/sdxl-vae-fp16-fix"
 SDXL_BASE = "stabilityai/stable-diffusion-xl-base-1.0/sd_xl_base_1.0.safetensors"
+# training bases for the SDXL notebook (v-pred is read from the file header, see loraformat.is_vpred)
+SDXL_BASES = {
+    "sdxl-base": SDXL_BASE,
+    "pony-v6": "LyliaEngine/Pony_Diffusion_V6_XL/ponyDiffusionV6XL_v6StartWithThisOne.safetensors",
+    "illustrious-0.1": "OnomaAIResearch/Illustrious-xl-early-release-v0/Illustrious-XL-v0.1.safetensors",
+    "noobai-eps-1.1": "Laxhar/noobai-XL-1.1/NoobAI-XL-v1.1.safetensors",
+    "noobai-vpred-1.0": "Laxhar/noobai-XL-Vpred-1.0/NoobAI-XL-Vpred-v1.0.safetensors",
+}
 
 # Z-Image choices (any org/repo/file, URL or path also works)
 Z_REPO = "Tongyi-MAI/Z-Image-Turbo"  # tokenizer, VAE, scheduler, configs

@@ -161,6 +161,9 @@ class Engine:
         pipe = StableDiffusionXLPipeline.from_single_file(path, **kw)
         if vae != "fp16fix":
             pipe.vae.config.force_upcast = True  # model VAE in fp16 NaNs; upcast only for decode
+        if is_vpred(path):  # v-pred models (NoobAI v-pred) also need zero-terminal-SNR timesteps
+            pipe.scheduler = pipe.scheduler.from_config(pipe.scheduler.config, prediction_type="v_prediction",
+                                                        rescale_betas_zero_snr=True, timestep_spacing="trailing")
         pipe.set_progress_bar_config(disable=True)
         _fix_text_encoder_lora_keys(pipe)
         status("Moving to GPU")

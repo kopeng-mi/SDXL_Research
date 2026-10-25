@@ -190,3 +190,57 @@ def check_sdxl_checkpoint(path: str | Path) -> None:
     if fam in ("sd15", "flux"):
         what = "an SD 1.5" if fam == "sd15" else "a Flux"
         raise ValueError(f"{Path(path).name} is {what} checkpoint. The SDXL slot needs an SDXL checkpoint.")
+
+
+def is_vpred(path: str | Path) -> bool:
+    """v-prediction SDXL checkpoint (NoobAI v-pred style): it carries a `v_pred` marker tensor."""
+    try:
+        tensors, meta = read_header(path)
+    except ValueError:
+        return False
+    return "v_pred" in tensors or str(meta.get("modelspec.prediction_type", "")).startswith("v")
+
+
+# ---- epochs of a training run ----
+def pick_epochs(folder: Path, spec: str) -> list[tuple[int, Path]]:
+    """[(epoch, file)] from a training folder; the file without a number is the last epoch.
+    spec: last:K | all | 5,10,15"""
+    files = sorted(Path(folder).glob("*.safetensors"))
+    if any(p.stem.endswith("_diffusers") for p in files):  # Z-Image: only the converted files load in the app
+        files = [p for p in files if p.stem.endswith("_diffusers")]
+    eps: dict[int, Path] = {}
+    plain = []
+    for p in files:
+        m = re.search(r"-(\d+)(?:_diffusers)?$", p.stem)
+        if m:
+            eps.setdefault(int(m[1]), p)
+        else:
+            plain.append(p)
+    if plain:  # final save: one more than the last numbered epoch
+        eps.setdefault(max(eps, default=0) + 1, plain[0])
+    order = sorted(eps)
+    if spec == "all":
+        keep = order
+    elif spec.startswith("last:"):
+        keep = order[-int(spec[5:]):]
+    else:
+        want = {int(x) for x in spec.split(",") if x.strip()}
+        keep = [e for e in order if e in want]
+    return [(e, eps[e]) for e in keep]
+
+
+def pick(run_dir: str | Path, epoch: int, dest_dir: str | Path, name: str) -> Path:
+    """Copy one epoch (and its sidecar) to dest_dir/<name>_e<epoch>.safetensors; epoch 0 = the last."""
+    import shutil
+    eps = dict(pick_epochs(Path(run_dir), "all"))
+    if not eps:
+        raise FileNotFoundError(f"no LoRA files in {run_dir}")
+    epoch = epoch or max(eps)
+    if epoch not in eps:
+        raise ValueError(f"epoch {epoch} not found; there are {sorted(eps)}")
+    dst = Path(dest_dir) / f"{name}_e{epoch}.safetensors"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(eps[epoch], dst)
+    if sidecar_path(eps[epoch]).exists():
+        shutil.copy2(sidecar_path(eps[epoch]), sidecar_path(dst))
+    return dst
