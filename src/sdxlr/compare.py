@@ -2,6 +2,7 @@
 
   python -m sdxlr.compare --model PATH --loras GLOB --strengths 0.6 0.8 1.0 --prompt "..."
   python -m sdxlr.compare --model PATH --combos "a.safetensors:0.44+b.safetensors:0.44" ...
+  python -m sdxlr.compare --model PATH --lora-dir RUN_DIR --epochs last:3 --prompts "p1" "p2" --drive-out DIR
 
 Rows = LoRAs (or combos), columns = strengths. Same seed everywhere, so only
 the LoRA changes. Resume-safe: finished cells are skipped on re-run.
@@ -11,12 +12,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import time
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
 from .engine.models import Engine, Job
+from .loraformat import pick_epochs
 from .paths import Z_ENCODERS, Z_MODELS
 from .fetch import LORAS, MODELS, WORK, fetch, list_loras
 
@@ -69,7 +72,11 @@ def main() -> None:
     ap.add_argument("--loras", default="*.safetensors", help="glob over downloaded + trained LoRAs")
     ap.add_argument("--combos", nargs="*", default=[], help="'a.safetensors:0.44+b.safetensors:0.44'; strength = multiplier")
     ap.add_argument("--strengths", nargs="+", type=float, default=[0.78, 0.82, 0.88])
-    ap.add_argument("--prompt", required=True)
+    ap.add_argument("--lora-dir", type=Path, help="a training output folder: rows are its epochs")
+    ap.add_argument("--epochs", default="last:3", help="with --lora-dir: last:K, all, or a list like 5,10,15")
+    ap.add_argument("--prompt", default="")
+    ap.add_argument("--prompts", nargs="*", default=[], help="several prompts: one row per LoRA and prompt")
+    ap.add_argument("--drive-out", type=Path, help="copy grid.png + grid.json here")
     ap.add_argument("--negative", default="")
     ap.add_argument("--steps", type=int, default=25)
     ap.add_argument("--cfg", type=float, default=5.0)
@@ -83,11 +90,18 @@ def main() -> None:
     a = ap.parse_args()
 
     if a.combos:
-        rows = {c: [(_resolve(n), float(w)) for n, w in (x.rsplit(":", 1) for x in c.split("+"))] for c in a.combos}
+        loras = {c: [(_resolve(n), float(w)) for n, w in (x.rsplit(":", 1) for x in c.split("+"))] for c in a.combos}
+    elif a.lora_dir:
+        loras = {f"epoch {e}": [(str(p), 1.0)] for e, p in pick_epochs(a.lora_dir, a.epochs)}
     else:
-        rows = {p.name: [(str(p), 1.0)] for p in list_loras() if p.match(a.loras)}
-    if not rows:
-        raise SystemExit(f"no LoRAs match {a.loras}; fetch some first")
+        loras = {p.name: [(str(p), 1.0)] for p in list_loras() if p.match(a.loras)}
+    if not loras:
+        raise SystemExit(f"no LoRAs match {a.lora_dir or a.loras}; fetch or train some first")
+    prompts = a.prompts or [a.prompt]
+    if not any(prompts):
+        raise SystemExit("give --prompt or --prompts")
+    rows = {(f"{r} | p{k + 1}" if len(prompts) > 1 else r): (ls, pr)
+            for r, ls in loras.items() for k, pr in enumerate(prompts)}
     cols = [f"{s:.2f}" for s in a.strengths]
 
     out = OUT / a.name
@@ -107,9 +121,10 @@ def main() -> None:
     print(f"{len(rows)} rows x {len(cols)} strengths, {len(todo)} to render", flush=True)
     t0 = time.time()
     for i, (r, c, s) in enumerate(todo, 1):
-        job = Job(prompt=a.prompt, negative=a.negative, steps=a.steps, cfg=a.cfg, sampler=a.sampler,
+        ls, prompt = rows[r]
+        job = Job(prompt=prompt, negative=a.negative, steps=a.steps, cfg=a.cfg, sampler=a.sampler,
                   clip_skip=a.clip_skip, width=a.width, height=a.height, seed=a.seed,
-                  loras=[(p, w * s) for p, w in rows[r]])
+                  loras=[(p, w * s) for p, w in ls])
         try:
             imgs, _, info = eng.generate(job)
             f = out / f"{i:03d}_{Path(r).stem[:40]}_{c}.png".replace("+", "_").replace(":", "-")
@@ -125,6 +140,13 @@ def main() -> None:
         raise SystemExit(f"no images rendered; errors: {json.dumps(state['errors'], indent=1)}")
     grid = stitch(list(rows), cols, state["cells"])
     grid.save(out / "grid.png")
+    (out / "grid.json").write_text(json.dumps({"rows": list(rows), "cols": cols, "prompts": prompts,
+                                               "loras": {r: ls for r, (ls, _) in rows.items()},
+                                               "errors": state["errors"]}, indent=1))
+    if a.drive_out:
+        a.drive_out.mkdir(parents=True, exist_ok=True)
+        for f in ("grid.png", "grid.json"):
+            shutil.copy2(out / f, a.drive_out / f)
     print(f"grid: {out / 'grid.png'} ({len(state['cells'])} images, {len(state['errors'])} errors, "
           f"{time.time() - t0:.0f}s)", flush=True)
 
