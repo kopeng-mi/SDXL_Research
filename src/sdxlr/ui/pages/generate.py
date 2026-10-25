@@ -11,6 +11,7 @@ from nicegui import app, run, ui
 from ... import presets
 from ...activity import Cancelled, act
 from ... import loraformat
+from ...paths import zimage_only
 from ...service import files
 from ...service.gen import safe_update
 from ..core import (ASPECTS, MAX_UPLOAD, SAMPLERS, STYLES, TOOL_LABEL, Z_ENCODERS, busy_task, check_generate, check_model, engc,
@@ -40,6 +41,24 @@ async def do_load(S):
     except Cancelled:
         task.fail("")
         ui.notify("Load cancelled")
+    except Exception as e:
+        task.fail(err(e))
+        ui.notify(err(e), type="negative", multi_line=True)
+
+
+async def do_enhance(S, undo_b):
+    if busy_task():
+        return
+    task = act.start("enhance", (S["prompt"] or "")[:50])
+    try:
+        r = await run.io_bound(engc.call, "enhance", {"text": S["prompt"],
+                                                     "mode": "engineer" if S["z_te"] == "engineer" else "official"}, task)
+        task.finish(r["info"])
+        undo_b.before = S["prompt"]  # not in S: the session file stays clean
+        S["prompt"] = r["text"]
+        undo_b.set_visibility(True)
+    except Cancelled:
+        task.fail("")
     except Exception as e:
         task.fail(err(e))
         ui.notify(err(e), type="negative", multi_line=True)
@@ -89,7 +108,10 @@ def page(S):
     with left:
         with ui.column().classes("panel w-full gap-3"):
             with ui.row().classes("w-full items-center no-wrap gap-3"):
-                seg(["Z-Image", "SDXL"], S, "kind", on_change=lambda e: hooks["kind"]())
+                if zimage_only():
+                    S["kind"] = "Z-Image"
+                else:
+                    seg(["Z-Image", "SDXL"], S, "kind", on_change=lambda e: hooks["kind"]())
                 zsel = ui.select(z_names(), with_input=True, new_value_mode="add-unique").bind_value(S, "z_model") \
                     .props("outlined dense").classes("grow").bind_visibility_from(S, "kind", value="Z-Image")
                 ssel = ui.select(model_names(), with_input=True).bind_value(S, "sdxl_model") \
@@ -123,7 +145,13 @@ def page(S):
                         pass
             prompt = ui.textarea(placeholder="ohwx_person, a woman in a green silk saree, standing in a garden") \
                 .bind_value(S, "prompt").props("outlined autogrow input-style='min-height:72px'").classes("w-full")
-            ui.label("Ctrl+Enter to generate").classes("hint")
+            with ui.row().classes("w-full items-center no-wrap gap-2"):
+                ui.label("Ctrl+Enter to generate").classes("hint grow")
+                undo_b = button("Undo", lambda: (S.update(prompt=undo_b.before), undo_b.set_visibility(False)),
+                                icon="undo").props("size=sm")
+                undo_b.set_visibility(False)
+                button("Write a detailed prompt", lambda: do_enhance(S, undo_b), icon="edit_note").props("size=sm")                     .tooltip("Turns a short idea into a detailed Z-Image prompt, using the loaded text encoder "
+                             "(an abliterated one writes without refusing)").bind_visibility_from(S, "kind", value="Z-Image")
 
         def fill_recent():
             recent_menu.clear()

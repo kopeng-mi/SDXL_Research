@@ -310,6 +310,20 @@ def _op_upscale(eng, args, status, step, check):
             "size": list(big.size)}
 
 
+def _op_enhance(eng, args, status, step, check):
+    """Write a detailed prompt with the loaded Z-Image text encoder."""
+    from . import enhance
+    if eng.kind != "zimage" or eng.pipe is None:
+        raise UserError("Load a Z-Image model first: the prompt writer is its text encoder.")
+    text = (args.get("text") or "").strip()
+    if not text:
+        raise UserError("Write a short idea in the prompt box first.")
+    status("Writing a detailed prompt")
+    t0 = time.time()
+    out = enhance.write(eng.pipe, text, args.get("mode", "official"), int(args.get("max_new", 400)))
+    return {"text": out, "info": f"{len(out.split())} words in {time.time() - t0:.0f}s"}
+
+
 def _op_hog(eng, args, status, step, check):
     """Test only (SDXLR_DEBUG_OPS=1): eat RAM until the RAM guard kills this worker (tools/t4_check.py)."""
     hold, mb = [], int(args.get("step_mb", 256))
@@ -323,7 +337,7 @@ def _op_hog(eng, args, status, step, check):
 
 
 OPS = {"status": _op_status, "unload": _op_unload, "load": _op_load,
-       "generate": _op_generate, "upscale": _op_upscale}
+       "generate": _op_generate, "upscale": _op_upscale, "enhance": _op_enhance}
 if os.environ.get("SDXLR_DEBUG_OPS"):
     OPS["hog"] = _op_hog
 
