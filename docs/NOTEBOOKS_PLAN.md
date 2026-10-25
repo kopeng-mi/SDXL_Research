@@ -230,4 +230,9 @@ App changes:
 | P5 | zimage app trim, Drive dirs, custom checkpoint, enhance op + button | fake-engine browser pass |
 | P6 | T4: setup times, captioner images/min, Fast vs Best training (1 run each), Fooocus gen time, enhance tok/s, custom ckpt RAM peak | numbers written to PLAN.md; presets updated |
 
+**Status (2026-10-25):** P0 to P5 done and pushed (local tests pass; app tests pass in a temp env). P6 runs
+`tools/t4_nb_check.sh` on a T4. Left over, not yet removed: `hfsync.py` (still the `--hf-repo` path of the trainers),
+`ui/pages/{dataset,train,compare}.py` and their helpers in `ui/core.py` (unlinked from the app), `tools/train_check.py`.
+Untested until a T4 run: custom Z checkpoint nf4 load (bnb device placement, RAM peak), Fooocus image speed.
+
 Each phase removes the code it replaces. `README.md` + `HANDOVER.md` are updated at P6.
