@@ -57,7 +57,7 @@ def run(args: list[str], cwd: str | Path = REPO, progress_every: float = 5.0, py
         raise SystemExit(f"failed with exit code {proc.returncode}")
 
 
-def serve(args: list[str], max_restarts: int = 5) -> None:
+def serve(args: list[str], max_restarts: int = 5, **run_kw) -> None:
     """Run the app and start it again if it crashes (not when you stop the cell).
 
     More than `max_restarts` crashes within 10 minutes means something is
@@ -66,7 +66,7 @@ def serve(args: list[str], max_restarts: int = 5) -> None:
     crashes: list[float] = []
     while True:
         try:
-            run(args)
+            run(args, **run_kw)
             return  # stopped from the cell, or exited cleanly
         except SystemExit as e:
             crashes = [t for t in crashes if time.time() - t < 600] + [time.time()]
