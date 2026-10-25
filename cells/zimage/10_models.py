@@ -7,7 +7,7 @@
 #@title Models
 MODEL = "turbo 4-bit (unsloth)"  #@param ["turbo 4-bit (unsloth)", "turbo Q8", "turbo Q6", "turbo Q5", "turbo Q4"]
 CUSTOM_MODEL = ""  #@param {type:"string"}
-TE = "official"  #@param ["official", "abliterated", "heretic", "engineer"]
+TE = "abliterated"  #@param ["abliterated", "official", "heretic", "engineer"]
 #@markdown TE: use the one your LoRA was trained with. `abliterated`/`heretic` follow prompts without refusing;
 #@markdown `engineer` also writes the best prompts with **Write a detailed prompt**.
 LORAS = ""  #@param {type:"string"}

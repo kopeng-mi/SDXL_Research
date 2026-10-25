@@ -1,14 +1,16 @@
 # %% [md]
 # ## 2. Settings
-# **PRESET**: `best` = Z-Image Base, 512 px, 10 epochs (measured, about 47 min for any photo count);
-# `fast` = Turbo + ostris training adapter, 6 epochs (an estimate until measured).
+# Defaults are the lightest setup: **fast** (Turbo + ostris training adapter, 512 px, fp8 weights, 6 epochs) with the
+# **abliterated** text encoder; tests run on Turbo 4-bit (about 6 GB VRAM). `best` = Z-Image Base, 10 epochs (measured).
+# Any photo count works: repeats and epochs scale so the total stays near the proven amount. For 100 photos that is
+# 1 repeat x 6 epochs = 600 steps on fast (about 62 min est), or 1 x 4 = 400 steps on best (about 43 min).
 # **TE**: the text encoder used for training. Generate with the same one (the Z-Image app has the same list).
 # Leave EPOCHS / REPEATS / DIM / LR at 0 for the preset values; repeats 0 = auto from your photo count.
 # %%
 #@title Settings
 SUBJECT = "person"  #@param ["person", "character/object", "style", "concept/pose"]
-PRESET = "best"  #@param ["best", "fast"]
-TE = "official"  #@param ["official", "abliterated", "heretic", "engineer"]
+PRESET = "fast"  #@param ["fast", "best"]
+TE = "abliterated"  #@param ["abliterated", "official", "heretic", "engineer"]
 RUN = "my_zlora"  #@param {type:"string"}
 RESOLUTION = 512  #@param [512, 768]
 EPOCHS = 0  #@param {type:"integer"}
