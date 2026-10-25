@@ -24,7 +24,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from .paths import LORAS, MODELS, WEIGHTS, WORK, ZIMAGE
+from .paths import LORAS, MODELS, WEIGHTS, WORK, ZIMAGE, drive_root
 
 
 def _hf_link(src: str) -> tuple[str, str, str] | None:
@@ -167,12 +167,18 @@ def list_models() -> list[Path]:
 
 def list_zimage() -> list[Path]:
     """User-added Z-Image transformers (Library: link or upload)."""
-    return sorted(p for p in ZIMAGE.glob("*") if p.suffix in WEIGHTS) if ZIMAGE.exists() else []
+    d = drive_root()
+    dirs = [ZIMAGE] + ([d / "models" / "zimage"] if d else [])
+    return sorted(p for z in dirs if z.exists() for p in z.glob("*") if p.suffix in WEIGHTS)
 
 
 def list_loras() -> list[Path]:
     """Downloaded LoRAs + everything trained in this session."""
-    return sorted({*LORAS.glob("*.safetensors"), *(WORK / "runs").glob("*/*.safetensors")}, key=lambda p: p.name)
+    found = {*LORAS.glob("*.safetensors"), *(WORK / "runs").glob("*/*.safetensors")}
+    if d := drive_root():  # picked epochs (loras/<kind>/*) and every epoch of each run (loras/<kind>/<run>/*)
+        for kind in ("zimage", "sdxl"):
+            found |= {*(d / "loras" / kind).glob("*.safetensors"), *(d / "loras" / kind).glob("*/*.safetensors")}
+    return sorted(found, key=lambda p: p.name)
 
 
 if __name__ == "__main__":

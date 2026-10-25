@@ -22,13 +22,12 @@ from ..service import state
 from . import core
 from .core import (USAGE, busy_task, engc, estimate_preview, jm, loaded_label, running_job, state_for,
                    task_is_loading)
-from .pages import activity, compare, dataset, generate, history, library, train
+from .pages import activity, generate, history, library
 from .theme import HEAD, bar_html, button, confirm
 
-PAGES = [("Generate", "/", generate.page, "auto_awesome"), ("Dataset", "/dataset", dataset.page, "photo_library"),
-         ("Train", "/train", train.page, "model_training"), ("Compare", "/compare", compare.page, "grid_view"),
-         ("Library", "/library", library.page, "inventory_2"), ("History", "/history", history.page, "history"),
-         ("Activity", "/activity", activity.page, "list_alt")]
+# dataset, training and compare live in the notebooks now (notebooks/*.ipynb)
+PAGES = [("Generate", "/", generate.page, "auto_awesome"), ("Library", "/library", library.page, "inventory_2"),
+         ("History", "/history", history.page, "history"), ("Activity", "/activity", activity.page, "list_alt")]
 
 
 def set_if(el, attr: str, value) -> None:
@@ -203,7 +202,15 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--access", choices=["tailscale", "none"], default="tailscale")
     ap.add_argument("--sync", action="store_true", help="pull presets + LoRAs from the sync repo at start")
+    ap.add_argument("--host-name", default="sdxlr", help="Tailscale name: http://NAME:PORT")
+    ap.add_argument("--drive", type=Path, help="Drive SDXLR folder: its LoRAs and Z-Image models are listed too")
+    ap.add_argument("--zimage-only", action="store_true", help="hide SDXL (the sdxl notebook runs Fooocus)")
     a = ap.parse_args()
+    import os
+    if a.drive:
+        os.environ["SDXLR_DRIVE"] = str(a.drive)
+    if a.zimage_only:
+        os.environ["SDXLR_ZIMAGE_ONLY"] = "1"
     setup_logging()
     from ..service import guard
     guard.start(core.engc, core.jm)
@@ -238,7 +245,7 @@ def main() -> None:
 
         def ts_up():
             try:
-                announce(tailnet.up(a.port) + "  (on a device signed in to your Tailscale)")
+                announce(tailnet.up(a.port, hostname=a.host_name) + "  (on a device signed in to your Tailscale)")
                 threading.Thread(target=tailnet.watch_links, daemon=True).start()
             except Exception as e:
                 log.info(f"Tailscale failed: {e}")

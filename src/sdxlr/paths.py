@@ -21,6 +21,16 @@ def _work_root() -> Path:
 
 
 WORK = _work_root()
+
+
+def drive_root() -> Path | None:
+    """The Drive SDXLR folder when the app was started with --drive (env, so the worker sees it too)."""
+    d = os.environ.get("SDXLR_DRIVE")
+    return Path(d) if d and Path(d).exists() else None
+
+
+def zimage_only() -> bool:
+    return os.environ.get("SDXLR_ZIMAGE_ONLY") == "1"
 MODELS = WORK / "models"
 LORAS = WORK / "loras"
 ZIMAGE = MODELS / "zimage_custom"  # user Z-Image checkpoints (built-in ones go to models/zimage)
