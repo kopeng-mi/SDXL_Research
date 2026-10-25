@@ -11,6 +11,7 @@ CLASS_WORD = "woman"  #@param {type:"string"}
 from sdxlr import drive, plan, paths
 IMGS = (".png", ".jpg", ".jpeg", ".webp")
 LOCAL = paths.DATASETS / DS_NAME
+LOCAL.mkdir(parents=True, exist_ok=True)
 DRIVE_DS = ROOT / "datasets" / DS_NAME if ROOT else None
 if DRIVE_DS:
     assert DRIVE_DS.exists(), f"{DRIVE_DS} not found: run the captioning notebook first, or check DS_NAME"
