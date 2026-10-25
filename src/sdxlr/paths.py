@@ -61,6 +61,8 @@ Z_SIZES_GB = {"turbo Q8": 7.2, "turbo Q6": 5.9, "turbo Q5": 5.6, "turbo Q4": 5.0
 Z_ENCODERS = {
     "official": "Tongyi-MAI/Z-Image-Turbo:text_encoder",
     "abliterated": "BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1",  # fewer refusals in prompt following
+    "heretic": "DreamFast/qwen3-4b-heretic",  # heretic v1.2 on plain Qwen3-4B
+    "engineer": "BennyDaBall/Z-Image-Engineer-V6",  # tuned prompt writer; changes the look per seed, not abliterated
     # unsloth's pre-quantized encoder was tried (T4, 2026-10-24): its packed 4-bit weights do not load through AutoModel
     # (size mismatch on every Linear), so it is not offered; the official encoder quantized at load stays
 }

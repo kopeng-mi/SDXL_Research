@@ -1,0 +1,19 @@
+# Fast Z-Image LoRA (est until a T4 run measures it): train on Turbo with the ostris
+# de-distill adapter merged in (smoke epoch 505 s vs Base 570 s), 6 epochs, higher LR.
+dit: turbo
+adapter: ostris
+resolution: 512
+batch_size: 1
+repeats: 0            # 0 = auto from the image count (plan.auto)
+epochs: 6
+save_every: 1
+seed: 42
+
+network_dim: 16
+network_alpha: 16
+optimizer: adamw8bit
+lr: 1.5e-4
+flow_shift: 2.0
+
+fp8: true
+blocks_to_swap: 0

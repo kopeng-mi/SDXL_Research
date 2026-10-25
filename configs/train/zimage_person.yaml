@@ -5,7 +5,7 @@ dit: null             # null = Comfy-Org/Z-Image base (bf16, stored as fp8 when 
 adapter: null         # with dit: turbo, "ostris" merges ostris's de-distill training adapter (A/B vs base)
 resolution: 512       # 1024 runs out of memory on a T4; try 768 once 512 works
 batch_size: 1
-repeats: 4
+repeats: 0            # 0 = auto from the image count (plan.auto); 4 for 11 photos
 epochs: 10
 save_every: 1
 seed: 42
